@@ -14,11 +14,28 @@ from pathlib import Path
 # 添加lib目录到路径
 sys.path.insert(0, os.path.dirname(__file__))
 
+import logging
+
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
 from lib.data import load_test_data, validate_data
 from lib.features import engineer_features, get_feature_columns
 from lib.models import HullModel, create_submission
 from lib.utils import PerformanceTracker, save_logs, save_metrics, validate_submission
+
+# 尝试导入配置模块
+try:
+    from lib.config import ConfigManager, get_config
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    print("⚠️ 配置模块不可用")
+
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 def parse_args(argv=None):
@@ -47,6 +64,13 @@ def parse_args(argv=None):
     )
     
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="配置文件路径"
+    )
+    
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="详细输出模式"
@@ -59,7 +83,22 @@ def main():
     """主函数 - 运行模型预测"""
     
     args = parse_args()
-    tracker = PerformanceTracker()
+    
+    # 初始化配置
+    if CONFIG_AVAILABLE and args.config:
+        config_manager = ConfigManager(str(args.config))
+        logging_config = config_manager.get_logging_config()
+        # 更新日志配置
+        logging.basicConfig(
+            level=getattr(logging, logging_config['level'], logging.INFO),
+            format=logging_config['format']
+        )
+    elif CONFIG_AVAILABLE:
+        config_manager = get_config()
+    else:
+        config_manager = None
+    
+    tracker = PerformanceTracker(logger=logger)
     
     print("🚀 Hull Tactical - Market Prediction 模型启动")
     print(f"📋 模型类型: {args.model_type}")
@@ -81,15 +120,18 @@ def main():
     try:
         # 加载数据
         tracker.start_task("load_data")
+        tracker.record_memory_usage()
         test_data = load_test_data(data_paths)
         
         if not validate_data(test_data, "test"):
             return 1
         
+        tracker.record_memory_usage()
         tracker.end_task()
         
         # 特征工程
         tracker.start_task("feature_engineering")
+        tracker.record_memory_usage()
         feature_cols = get_feature_columns(test_data)
         features = engineer_features(test_data, feature_cols)
         
@@ -97,10 +139,12 @@ def main():
             print(f"🔧 特征数量: {len(feature_cols)}")
             print(f"📊 特征形状: {features.shape}")
         
+        tracker.record_memory_usage()
         tracker.end_task()
         
         # 模型预测
         tracker.start_task("model_prediction")
+        tracker.record_memory_usage()
         
         # 创建并训练模型（这里使用基线模型）
         model = HullModel(model_type=args.model_type)
@@ -110,6 +154,7 @@ def main():
         np.random.seed(42)
         predictions = np.random.uniform(0, 2, size=len(test_data))
         
+        tracker.record_memory_usage()
         tracker.end_task()
         
         # 创建提交文件

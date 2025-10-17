@@ -14,12 +14,26 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 def create_baseline_model():
     """创建基线模型"""
     
+    # 导入配置
+    try:
+        from .config import get_config
+        config = get_config()
+        model_config = config.get_model_config()
+        n_estimators = model_config['baseline_n_estimators']
+        max_depth = model_config['baseline_max_depth']
+        random_state = model_config['baseline_random_state']
+    except ImportError:
+        # 如果配置模块不可用，使用默认值
+        n_estimators = 100
+        max_depth = 10
+        random_state = 42
+    
     try:
         from sklearn.ensemble import RandomForestRegressor
         return RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            random_state=random_state,
             n_jobs=-1
         )
     except ImportError:

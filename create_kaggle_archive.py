@@ -16,9 +16,13 @@ def create_kaggle_archive():
         # 主模型文件
         "working/main.py",
         "working/__init__.py",
+        "working/config.ini",
         
         # 核心库文件
         "working/lib/",
+        
+        # 测试文件
+        "working/tests/",
         
         # 依赖文件
         "requirements.txt",

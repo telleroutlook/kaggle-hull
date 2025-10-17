@@ -46,19 +46,43 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
     """添加统计特征"""
     
+    # 导入配置
+    try:
+        from .config import get_config
+        config = get_config()
+        features_config = config.get_features_config()
+        max_features = features_config['max_features']
+        rolling_windows = features_config['rolling_windows']
+        lag_periods = features_config['lag_periods']
+    except ImportError:
+        # 如果配置模块不可用，使用默认值
+        max_features = 20
+        rolling_windows = [5, 10, 20]
+        lag_periods = [1, 2, 3]
+    
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     
+    # 只对数值列添加特征，避免内存爆炸
+    selected_cols = numeric_cols[:min(max_features, len(numeric_cols))]  # 限制特征数量
+    
+    # 使用字典推导式优化内存使用
+    new_features = {}
+    
     # 添加滚动统计特征
-    for window in [5, 10, 20]:
-        for col in numeric_cols:
-            if len(df) >= window:
-                df[f'{col}_rolling_mean_{window}'] = df[col].rolling(window=window).mean()
-                df[f'{col}_rolling_std_{window}'] = df[col].rolling(window=window).std()
+    for window in rolling_windows:
+        if len(df) >= window:
+            for col in selected_cols:
+                new_features[f'{col}_rolling_mean_{window}'] = df[col].rolling(window=window).mean()
+                new_features[f'{col}_rolling_std_{window}'] = df[col].rolling(window=window).std()
     
     # 添加滞后特征
-    for lag in [1, 2, 3]:
-        for col in numeric_cols:
-            df[f'{col}_lag_{lag}'] = df[col].shift(lag)
+    for lag in lag_periods:
+        for col in selected_cols:
+            new_features[f'{col}_lag_{lag}'] = df[col].shift(lag)
+    
+    # 一次性添加所有新特征
+    for col_name, values in new_features.items():
+        df[col_name] = values
     
     return df
 

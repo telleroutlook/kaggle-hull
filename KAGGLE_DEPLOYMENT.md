@@ -10,10 +10,22 @@
 
 ```
 ├── create_kaggle_archive.py    # 创建Kaggle部署包的脚本
-├── kaggle_simple_cell.py       # 单单元格Kaggle notebook版本
+├── kaggle_simple_cell.py       # 单元格Kaggle notebook版本
+├── kaggle_optimized_cell.py    # 优化版Kaggle notebook版本
 ├── working/
 │   ├── main.py                 # 主模型入口点
-│   └── __init__.py             # 包初始化文件
+│   ├── config.ini              # 配置文件
+│   ├── __init__.py             # 包初始化文件
+│   ├── lib/                    # 模块化库
+│   │   ├── __init__.py
+│   │   ├── env.py              # 环境检测
+│   │   ├── data.py             # 数据加载
+│   │   ├── features.py         # 特征工程
+│   │   ├── models.py           # 模型定义
+│   │   ├── evaluation.py       # 评估指标
+│   │   ├── utils.py            # 工具函数
+│   │   └── config.py           # 配置管理
+│   └── tests/                  # 测试套件
 ├── requirements.txt            # Python依赖
 ├── README.md                   # 项目说明
 ├── IFLOW.md                    # 项目概览和开发指南
@@ -52,18 +64,137 @@ python3 create_kaggle_archive.py
 
 ### 4. 运行模型
 
-#### 方法1：简单单元格版本（推荐）
+#### 方法1：优化版单元格（推荐）
+
+使用 `kaggle_optimized_cell.py` 中的代码，在Notebook中创建一个新的代码单元格：
+
+```python
+# Kaggle环境模型部署优化版
+import sys
+import os
+import subprocess
+import time
+from pathlib import Path
+
+# 添加项目路径
+sys.path.insert(0, '/kaggle/input/hull-tactical-market-prediction/working')
+
+def install_dependencies():
+    """安装依赖包"""
+    
+    requirements_path = '/kaggle/input/hull-tactical-market-prediction/requirements.txt'
+    
+    if os.path.exists(requirements_path):
+        print("📦 安装依赖包...")
+        try:
+            subprocess.check_call([
+                sys.executable, '-m', 'pip', 'install', '-r', requirements_path
+            ])
+            print("✅ 依赖包安装完成")
+        except Exception as e:
+            print(f"⚠️ 安装依赖包时出错: {e}")
+            # 尝试安装关键依赖
+            essential_packages = ['numpy', 'pandas', 'scikit-learn', 'psutil']
+            for package in essential_packages:
+                try:
+                    __import__(package)
+                except ImportError:
+                    print(f"📦 安装关键包: {package}")
+                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+    else:
+        print("⚠️ 未找到requirements.txt，安装关键依赖包")
+        packages_to_install = ['numpy', 'pandas', 'scikit-learn', 'psutil']
+        for package in packages_to_install:
+            try:
+                __import__(package)
+            except ImportError:
+                print(f"📦 安装 {package}")
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+
+
+def run_model():
+    """运行模型"""
+    
+    print("🚀 启动Hull Tactical - Market Prediction模型")
+    
+    try:
+        # 导入主模块
+        from main import main
+        
+        # 运行主函数
+        start_time = time.time()
+        result = main()
+        end_time = time.time()
+        
+        print(f"✅ 模型运行完成，耗时: {end_time - start_time:.2f}秒")
+        return result
+        
+    except Exception as e:
+        print(f"❌ 运行模型时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def main():
+    """主函数"""
+    
+    print("🎯 Kaggle环境模型部署优化版")
+    print("="*50)
+    
+    # 检查当前环境
+    if '/kaggle/input/' not in os.getcwd() and '/kaggle/working' not in os.getcwd():
+        print("⚠️ 警告: 似乎不在Kaggle环境中运行")
+    
+    # 安装依赖
+    install_dependencies()
+    
+    # 检查必要的文件
+    required_files = [
+        '/kaggle/input/hull-tactical-market-prediction/working/main.py',
+        '/kaggle/input/hull-tactical-market-prediction/working/lib/models.py',
+        '/kaggle/input/hull-tactical-market-prediction/working/lib/features.py',
+        '/kaggle/input/hull-tactical-market-prediction/working/lib/utils.py',
+        '/kaggle/input/hull-tactical-market-prediction/working/config.ini'
+    ]
+    
+    for req_file in required_files:
+        if not os.path.exists(req_file):
+            print(f"❌ 缺少必需文件: {req_file}")
+            return 1
+        else:
+            print(f"✅ 找到文件: {req_file}")
+    
+    print("\n📋 运行模型...")
+    result = run_model()
+    
+    # 检查输出文件
+    output_files = [
+        '/kaggle/working/submission.csv',
+        '/kaggle/working/hull_logs.jsonl',
+        '/kaggle/working/hull_metrics.csv'
+    ]
+    
+    for output_file in output_files:
+        if os.path.exists(output_file):
+            print(f"✅ 输出文件已创建: {output_file}")
+        else:
+            print(f"⚠️ 输出文件未找到: {output_file}")
+    
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+#### 方法2：简单单元格版本
 
 1. 在Notebook中创建一个新的代码单元格
 2. 将 `kaggle_simple_cell.py` 文件的全部内容复制粘贴到该单元格
 3. 运行单元格
-4. 脚本将自动：
-   - 查找并加载模型文件
-   - 安装必要的依赖
-   - 运行模型预测
-   - 生成提交文件
 
-#### 方法2：标准方式
+#### 方法3：命令行方式
 
 1. 解压数据集：
    ```python
@@ -77,10 +208,35 @@ python3 create_kaggle_archive.py
 
 ### 5. 提交结果
 
-1. 运行完成后，检查是否生成了 `/kaggle/working/submission.parquet` 文件
+1. 运行完成后，检查是否生成了 `/kaggle/working/submission.csv` 文件
 2. 点击Notebook右上角的 "Save Version" 按钮
 3. 选择 "Save & Run All (Commit)"
 4. 等待运行完成，然后点击 "Submit" 按钮提交结果
+
+## 配置文件
+
+项目包含 `working/config.ini` 配置文件，允许你调整模型参数：
+
+```ini
+[model]
+type = "baseline"
+baseline_n_estimators = 100
+baseline_max_depth = 10
+baseline_random_state = 42
+
+[features]
+max_features = 20
+rolling_windows = [5, 10, 20]
+lag_periods = [1, 2, 3]
+
+[evaluation]
+volatility_constraint = 1.2
+risk_free_rate = 0.0
+
+[logging]
+level = "INFO"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+```
 
 ## 模型开发
 
@@ -130,7 +286,7 @@ another-package>=2.0.0
    - 检查数据集名称是否与脚本中搜索的路径匹配
 
 2. **依赖安装失败**
-   - 在 `kaggle_simple_cell.py` 中添加需要的pip安装命令
+   - 在 `kaggle_optimized_cell.py` 中添加需要的pip安装命令
    - 确保版本兼容性
 
 3. **内存不足**
@@ -149,12 +305,13 @@ another-package>=2.0.0
 
 ```bash
 # 在项目根目录运行
-python working/main.py
+python working/main.py --verbose
 ```
 
 ## 性能优化建议
 
 1. **内存优化**
+   - 特征工程时限制特征数量（通过配置文件）
    - 使用数据分块处理
    - 及时释放不需要的变量
    - 使用适当的数据类型
@@ -169,11 +326,40 @@ python working/main.py
    - 使用轻量级模型
    - 模型压缩技术
 
+## 配置管理
+
+通过 `working/lib/config.py` 模块管理配置：
+
+```python
+from lib.config import get_config
+
+config = get_config()
+model_config = config.get_model_config()
+features_config = config.get_features_config()
+```
+
+## 测试套件
+
+项目包含完整的测试套件，位于 `working/tests/` 目录下：
+
+- `test_env.py` - 环境检测测试
+- `test_data.py` - 数据加载测试
+- `test_features.py` - 特征工程测试
+- `test_models.py` - 模型测试
+- `test_utils.py` - 工具函数测试
+- `test_evaluation.py` - 评估指标测试
+- `simple_test.py` - 简化测试
+
+运行测试：
+```bash
+python working/tests/simple_test.py
+```
+
 ## 注意事项
 
 - 确保模型不在训练阶段"窥视"未来数据
 - 预测值必须在0-2之间
-- 提交文件必须是 `submission.parquet` 格式
+- 提交文件必须是 `submission.csv` 格式
 - 包含 `date_id` 和 `prediction` 两列
 
 ## 故障排除
