@@ -106,12 +106,6 @@ else:
 
 print(f"最终模型路径: {actual_solver_path}")
 
-# 安装依赖（Kaggle notebook通常已包含这些）
-print("检查依赖...")
-# Kaggle notebook通常已包含numpy, pandas, scikit-learn等
-# 如果需要，取消注释下面的行：
-# !pip install numpy>=1.24 pandas>=2.0 scikit-learn>=1.3
-
 # 检查模型目录中的内容
 print("\n检查模型目录...")
 if os.path.exists(actual_solver_path):
@@ -125,11 +119,19 @@ if os.path.exists(actual_solver_path):
         print(f"\nLib目录存在: {lib_path}")
         for item in os.listdir(lib_path):
             print(f"  - {item}")
+    else:
+        print("⚠️  Lib目录不存在，可能影响模块导入")
 else:
     print(f"模型路径不存在: {actual_solver_path}")
     print("可用的输入目录:")
     for item in os.listdir("/kaggle/input"):
         print(f"  - {item}")
+
+# 安装依赖（Kaggle notebook通常已包含这些）
+print("\n检查依赖...")
+# Kaggle notebook通常已包含numpy, pandas, scikit-learn等
+# 如果需要，取消注释下面的行：
+# !pip install numpy>=1.24 pandas>=2.0 scikit-learn>=1.3
 
 # 设置数据路径
 print("\n🚀 启动Hull Tactical - Market Prediction模型...")
@@ -150,7 +152,7 @@ try:
     # 运行模型
     print("运行模型...")
     result = subprocess.run([
-        sys.executable, "main.py"
+        sys.executable, "working/main.py"
     ], capture_output=True, text=True)
     
     print("模型输出:")

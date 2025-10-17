@@ -17,6 +17,9 @@ def create_kaggle_archive():
         "working/main.py",
         "working/__init__.py",
         
+        # 核心库文件
+        "working/lib/",
+        
         # 依赖文件
         "requirements.txt",
         
