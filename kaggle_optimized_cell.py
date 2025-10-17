@@ -28,25 +28,34 @@ def setup_paths():
         for root, dirs, files in os.walk('/kaggle/input', topdown=True):
             # 只显示前两层目录
             level = root.replace('/kaggle/input', '').count(os.sep)
-            if level < 2:
+            if level < 3:  # 增加一层深度
                 print(f"  {'  ' * level}- {os.path.basename(root)}/")
                 for d in dirs[:5]:  # 限制显示数量
-                    if level < 1:
+                    if level < 2:
                         print(f"    {'  ' * (level+1)}- {d}/")
                 for f in files[:5]:  # 限制显示数量
-                    if level < 1:
+                    if level < 2:
                         print(f"    {'  ' * (level+1)}- {f}")
-            if level > 2:
+            if level > 3:
                 del dirs[:]  # 不再深入遍历
     
-    # 查找包含working目录的数据集
+    # 查找包含working目录的数据集 - 更广泛的搜索
     found_paths = []
     if os.path.exists('/kaggle/input'):
-        for dataset_dir in os.listdir('/kaggle/input'):
-            working_path = f'/kaggle/input/{dataset_dir}/working'
-            if os.path.exists(working_path):
-                found_paths.append((working_path, f'/kaggle/input/{dataset_dir}'))
+        for root, dirs, files in os.walk('/kaggle/input'):
+            if 'working' in dirs and ('main.py' in os.listdir(os.path.join(root, 'working')) or 
+                                      os.path.exists(os.path.join(root, 'working', 'main.py'))):
+                working_path = os.path.join(root, 'working')
+                dataset_root = root
+                found_paths.append((working_path, dataset_root))
                 print(f"✅ 找到工作目录: {working_path}")
+                print(f"   数据集根目录: {dataset_root}")
+    
+    # 特别检查您提供的路径
+    specific_path = '/kaggle/input/d/tellerlin/hullsolver/working'
+    if os.path.exists(specific_path):
+        print(f"✅ 找到特定路径: {specific_path}")
+        found_paths.append((specific_path, '/kaggle/input/d/tellerlin/hullsolver'))
     
     # 如果找到，添加第一个找到的路径
     if found_paths:
@@ -56,7 +65,7 @@ def setup_paths():
         return dataset_root
     
     # 检查当前目录下是否有working
-    if os.path.exists('working'):
+    if os.path.exists('working') and os.path.exists('working/main.py'):
         sys.path.insert(0, 'working')
         print("✅ 使用当前目录下的working文件夹")
         return '.'
@@ -80,11 +89,14 @@ def install_dependencies():
         print("❌ 无法安装依赖：未找到数据集路径")
         return
     
-    requirements_path = os.path.join(dataset_root, 'requirements.txt')
-    if dataset_root == '.' and not os.path.exists('requirements.txt'):
+    # 根据数据集根目录确定requirements路径
+    if dataset_root == '.':
         requirements_path = 'requirements.txt'
+    else:
+        requirements_path = os.path.join(dataset_root, 'requirements.txt')
     
     print(f"查找requirements文件: {requirements_path}")
+    print(f"文件是否存在: {os.path.exists(requirements_path)}")
     
     if os.path.exists(requirements_path):
         print("📦 安装依赖包...")
@@ -157,32 +169,32 @@ def main():
     
     # 检查必要的文件
     required_files = [
-        'working/main.py',
-        'working/lib/models.py',
-        'working/lib/features.py',
-        'working/lib/utils.py',
-        'working/config.ini'
+        'main.py',
+        'lib/models.py',
+        'lib/features.py',
+        'lib/utils.py',
+        'config.ini'
     ]
     
-    # 根据数据集根目录调整文件路径
-    if dataset_root == '.':
-        # 如果根目录是当前目录，直接检查文件
-        required_files = [
-            'main.py',
-            'lib/models.py',
-            'lib/features.py',
-            'lib/utils.py',
-            'config.ini'
-        ]
-    
+    # 根据数据集根目录调整文件路径检查方式
     all_files_found = True
     for req_file in required_files:
-        full_path = req_file if dataset_root == '.' else os.path.join(dataset_root, req_file)
+        # 构建完整路径
+        if dataset_root == '.':
+            full_path = req_file
+        else:
+            full_path = os.path.join(dataset_root, 'working', req_file)
+        
         if os.path.exists(full_path):
             print(f"✅ 找到文件: {full_path}")
         else:
-            print(f"❌ 缺少必需文件: {full_path}")
-            all_files_found = False
+            # 尝试另一种路径结构
+            alt_path = os.path.join(dataset_root, req_file)
+            if os.path.exists(alt_path):
+                print(f"✅ 找到文件: {alt_path}")
+            else:
+                print(f"❌ 缺少必需文件: {full_path}")
+                all_files_found = False
     
     if not all_files_found:
         print("❌ 一些必需文件缺失，请检查数据集是否正确上传")
