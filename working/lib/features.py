@@ -80,9 +80,9 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
         for col in selected_cols:
             new_features[f'{col}_lag_{lag}'] = df[col].shift(lag)
     
-    # 一次性添加所有新特征
-    for col_name, values in new_features.items():
-        df[col_name] = values
+    # 一次性添加所有新特征，避免DataFrame碎片化
+    new_features_df = pd.DataFrame(new_features)
+    df = pd.concat([df, new_features_df], axis=1)
     
     return df
 
