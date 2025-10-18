@@ -12,7 +12,12 @@ import numpy as np
 from pathlib import Path
 
 # 添加lib目录到路径
-sys.path.insert(0, os.path.dirname(__file__))
+working_dir = os.path.dirname(__file__)
+if working_dir:
+    sys.path.insert(0, working_dir)
+else:
+    # 如果__file__为空（在某些环境中），使用当前工作目录
+    sys.path.insert(0, os.getcwd())
 
 import logging
 
@@ -75,6 +80,17 @@ def parse_args(argv=None):
         action="store_true",
         help="详细输出模式"
     )
+    
+    # 处理不同的运行环境参数
+    if argv is None:
+        # 过滤掉Jupyter内核参数和不相关的参数
+        filtered_argv = [arg for arg in sys.argv[1:] if not arg.startswith('-f') and not ':memory:' in arg]
+        try:
+            return parser.parse_args(filtered_argv)
+        except SystemExit:
+            # 如果解析失败，使用默认参数
+            print("⚠️ 参数解析失败，使用默认参数")
+            return parser.parse_args([])
     
     return parser.parse_args(argv)
 

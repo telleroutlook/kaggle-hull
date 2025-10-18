@@ -2,6 +2,7 @@
 """
 Kaggle Notebook运行脚本 - 优化版
 这个脚本旨在在Kaggle环境中运行Hull Tactical模型
+同时也兼容本地环境运行
 """
 
 import sys
@@ -10,11 +11,21 @@ import subprocess
 import time
 from pathlib import Path
 
-# 添加项目路径 - 支持不同的数据集名称
+def detect_environment():
+    """检测运行环境"""
+    if '/kaggle/input/' in os.getcwd() or '/kaggle/working' in os.getcwd():
+        return 'kaggle'
+    elif os.path.exists('input') and os.path.exists('working'):
+        return 'local'
+    else:
+        return 'unknown'
+
+# 添加项目路径 - 支持不同的数据集名称和环境
 def setup_paths():
     """设置正确的项目路径"""
     
-    print("🔍 搜索项目路径...")
+    env = detect_environment()
+    print(f"🔍 检测到运行环境: {env}")
     
     # 首先检查当前目录结构
     print(f"当前工作目录: {os.getcwd()}")
@@ -22,8 +33,8 @@ def setup_paths():
     for item in os.listdir('.'):
         print(f"  - {item}")
     
-    # 检查/kaggle/input目录
-    if os.path.exists('/kaggle/input'):
+    if env == 'kaggle':
+        # Kaggle环境路径处理
         print("/kaggle/input目录内容:")
         for root, dirs, files in os.walk('/kaggle/input', topdown=True):
             # 只显示前两层目录
@@ -38,31 +49,52 @@ def setup_paths():
                         print(f"    {'  ' * (level+1)}- {f}")
             if level > 3:
                 del dirs[:]  # 不再深入遍历
-    
-    # 查找包含working目录的数据集 - 更广泛的搜索
-    found_paths = []
-    if os.path.exists('/kaggle/input'):
-        for root, dirs, files in os.walk('/kaggle/input'):
-            if 'working' in dirs and ('main.py' in os.listdir(os.path.join(root, 'working')) or 
-                                      os.path.exists(os.path.join(root, 'working', 'main.py'))):
-                working_path = os.path.join(root, 'working')
-                dataset_root = root
-                found_paths.append((working_path, dataset_root))
-                print(f"✅ 找到工作目录: {working_path}")
-                print(f"   数据集根目录: {dataset_root}")
-    
-    # 特别检查您提供的路径
-    specific_path = '/kaggle/input/d/tellerlin/hullsolver/working'
-    if os.path.exists(specific_path):
-        print(f"✅ 找到特定路径: {specific_path}")
-        found_paths.append((specific_path, '/kaggle/input/d/tellerlin/hullsolver'))
-    
-    # 如果找到，添加第一个找到的路径
-    if found_paths:
-        working_path, dataset_root = found_paths[0]
-        sys.path.insert(0, working_path)
-        print(f"✅ 添加项目路径: {working_path}")
-        return dataset_root
+        
+        # 查找包含working目录的数据集 - 更广泛的搜索
+        found_paths = []
+        if os.path.exists('/kaggle/input'):
+            for root, dirs, files in os.walk('/kaggle/input'):
+                if 'working' in dirs and ('main.py' in os.listdir(os.path.join(root, 'working')) or 
+                                          os.path.exists(os.path.join(root, 'working', 'main.py'))):
+                    working_path = os.path.join(root, 'working')
+                    dataset_root = root
+                    found_paths.append((working_path, dataset_root))
+                    print(f"✅ 找到工作目录: {working_path}")
+                    print(f"   数据集根目录: {dataset_root}")
+        
+        # 特别检查常见的路径
+        common_paths = [
+            '/kaggle/input/hullsolver/working',
+            '/kaggle/input/hull-tactical-market-prediction/working',
+            '/kaggle/input/hull-solver/working'
+        ]
+        
+        for specific_path in common_paths:
+            if os.path.exists(specific_path):
+                print(f"✅ 找到特定路径: {specific_path}")
+                dataset_root = os.path.dirname(specific_path)
+                found_paths.append((specific_path, dataset_root))
+        
+        # 如果找到，添加第一个找到的路径
+        if found_paths:
+            working_path, dataset_root = found_paths[0]
+            sys.path.insert(0, working_path)
+            print(f"✅ 添加项目路径: {working_path}")
+            return dataset_root
+            
+    elif env == 'local':
+        # 本地环境路径处理
+        local_paths = [
+            'working',
+            '../working',
+            './working'
+        ]
+        
+        for path in local_paths:
+            if os.path.exists(path) and os.path.exists(os.path.join(path, 'main.py')):
+                sys.path.insert(0, path)
+                print(f"✅ 找到本地工作目录: {path}")
+                return '.'
     
     # 检查当前目录下是否有working
     if os.path.exists('working') and os.path.exists('working/main.py'):
@@ -133,12 +165,21 @@ def run_model():
     
     try:
         # 导入主模块
-        from main import main
+        import main
+        
+        # 保存原始的sys.argv
+        original_argv = sys.argv[:]
+        
+        # 设置空的参数列表，避免Jupyter内核传递的参数干扰
+        sys.argv = [sys.argv[0]]  # 只保留脚本名称
         
         # 运行主函数
         start_time = time.time()
-        result = main()
+        result = main.main()
         end_time = time.time()
+        
+        # 恢复原始的sys.argv
+        sys.argv = original_argv
         
         print(f"✅ 模型运行完成，耗时: {end_time - start_time:.2f}秒")
         return result
@@ -153,16 +194,15 @@ def run_model():
 def main():
     """主函数"""
     
-    print("🎯 Kaggle环境模型部署优化版")
+    print("🎯 Hull Tactical - Market Prediction 模型运行器")
     print("="*50)
     
     if not dataset_root:
         print("❌ 错误: 未找到有效的数据集路径")
         return 1
     
-    # 检查当前环境
-    if '/kaggle/input/' not in os.getcwd() and '/kaggle/working' not in os.getcwd():
-        print("⚠️ 警告: 似乎不在Kaggle环境中运行")
+    env = detect_environment()
+    print(f"🏠 运行环境: {env}")
     
     # 安装依赖
     install_dependencies()
@@ -207,7 +247,10 @@ def main():
     output_files = [
         '/kaggle/working/submission.csv',
         '/kaggle/working/hull_logs.jsonl',
-        '/kaggle/working/hull_metrics.csv'
+        '/kaggle/working/hull_metrics.csv',
+        './submission.csv',
+        './hull_logs.jsonl',
+        './hull_metrics.csv'
     ]
     
     for output_file in output_files:
