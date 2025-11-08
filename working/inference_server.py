@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Set, cast
+from typing import Dict, cast
 
 import numpy as np
 import pandas as pd
@@ -32,16 +32,24 @@ else:
 
 import kaggle_evaluation.default_inference_server  # type: ignore  # noqa: E402
 
-from lib.data import load_train_data, get_feature_columns  # noqa: E402
+from lib.data import load_train_data  # noqa: E402
 from lib.env import detect_run_environment, get_data_paths  # noqa: E402
+from lib.features import FeaturePipeline  # noqa: E402
+from lib.model_registry import get_model_params, resolve_model_type  # noqa: E402
 from lib.models import HullModel  # noqa: E402
+from lib.strategy import (  # noqa: E402
+    VolatilityOverlay,
+    optimize_scale_with_rolling_cv,
+    scale_to_allocation,
+    tune_allocation_scale,
+)
 
 
 STATE: Dict[str, object] = {
     "model": None,
-    "feature_columns": None,
-    "fill_values": None,
-    "numeric_features": None,
+    "pipeline": None,
+    "allocation_scale": 20.0,
+    "overlay": None,
 }
 
 
@@ -54,35 +62,35 @@ def _ensure_model_initialized() -> None:
     env = detect_run_environment()
     data_paths = get_data_paths(env)
     train_df = load_train_data(data_paths)
-    feature_columns = list(get_feature_columns(train_df))
-
-    features = train_df[feature_columns].copy()
-    numeric_cols = set(features.select_dtypes(include=[np.number]).columns)
-
-    fill_values: Dict[str, object] = {}
-    for col in feature_columns:
-        series = features[col]
-        if col in numeric_cols:
-            value = float(series.median(skipna=True)) if series.notnull().any() else 0.0
-        else:
-            modes = series.mode(dropna=True)
-            value = modes.iloc[0] if not modes.empty else "missing"
-        features[col] = pd.to_numeric(series, errors="coerce") if col in numeric_cols else series
-        features[col] = features[col].fillna(value)
-        fill_values[col] = value
-
-    features = features.fillna(0)
+    pipeline = FeaturePipeline()
+    features = pipeline.fit_transform(train_df)
     target = train_df["forward_returns"].fillna(train_df["forward_returns"].median())
 
-    model = HullModel(model_type="baseline")
+    model_type = resolve_model_type(None)
+    model_params = get_model_params(model_type)
+    model = HullModel(model_type=model_type, model_params=model_params)
     model.fit(features, target)
 
-    STATE["model"] = model
-    STATE["feature_columns"] = feature_columns
-    STATE["fill_values"] = fill_values
-    STATE["numeric_features"] = numeric_cols
+    raw_predictions = model.predict(features, clip=False)
+    tuning_result = optimize_scale_with_rolling_cv(raw_predictions, target.to_numpy())
+    allocation_scale = tuning_result.get("scale", 20.0)
+    if allocation_scale is None:
+        tuning_fallback = tune_allocation_scale(raw_predictions, target.to_numpy())
+        allocation_scale = tuning_fallback.get("scale", 20.0)
+        tuning_result = tuning_fallback
 
-    print(f"✅ Trained baseline model on {len(train_df):,} rows using {len(feature_columns)} features.")
+    STATE["model"] = model
+    STATE["pipeline"] = pipeline
+    STATE["allocation_scale"] = allocation_scale
+
+    print(
+        f"✅ Trained {model_type} model on {len(train_df):,} rows "
+        f"using {features.shape[1]} engineered features."
+    )
+    print(
+        f"🎯 Calibrated allocation scale={allocation_scale:.2f} "
+        f"(Sharpe {tuning_result.get('strategy_sharpe', tuning_result.get('cv_sharpe', 0)):.4f})"
+    )
 
 
 def _ensure_pandas(df) -> pd.DataFrame:
@@ -99,21 +107,8 @@ def _ensure_pandas(df) -> pd.DataFrame:
 
 
 def _prepare_features(batch_df: pd.DataFrame) -> pd.DataFrame:
-    feature_columns = cast(List[str], STATE["feature_columns"])
-    fill_values = cast(Dict[str, object], STATE["fill_values"])
-    numeric_features = cast(Set[str], STATE["numeric_features"])
-
-    # Align to the training feature order and inject any missing columns.
-    features = batch_df.reindex(columns=feature_columns, fill_value=np.nan)
-
-    for col in feature_columns:
-        fill_value = fill_values.get(col, 0.0)
-        if col in numeric_features:
-            features[col] = pd.to_numeric(features[col], errors="coerce").fillna(fill_value)
-        else:
-            features[col] = features[col].fillna(fill_value)
-
-    return features.fillna(0)
+    pipeline = cast(FeaturePipeline, STATE["pipeline"])
+    return pipeline.transform(batch_df)
 
 
 def predict(test_batch):
@@ -127,8 +122,26 @@ def predict(test_batch):
 
     features = _prepare_features(batch_df)
     model: HullModel = STATE["model"]  # type: ignore[assignment]
-    predictions = model.predict(features)
-    predictions = np.clip(predictions, 0.0, 2.0)
+    raw_predictions = model.predict(features, clip=False)
+    allocation_scale = cast(float, STATE.get("allocation_scale", 20.0))
+    predictions = scale_to_allocation(raw_predictions, scale=allocation_scale)
+
+    overlay_source = None
+    if "lagged_forward_returns" in batch_df.columns:
+        overlay_source = batch_df["lagged_forward_returns"].to_numpy()
+    elif "lagged_market_forward_excess_returns" in batch_df.columns:
+        overlay_source = batch_df["lagged_market_forward_excess_returns"].to_numpy()
+
+    if overlay_source is not None:
+        overlay_state = cast(
+            VolatilityOverlay | None,
+            STATE.get("overlay"),
+        )
+        if overlay_state is None:
+            overlay_state = VolatilityOverlay(reference_is_lagged=True)
+            STATE["overlay"] = overlay_state
+        overlay_result = overlay_state.transform(predictions, overlay_source)
+        predictions = overlay_result["allocations"]
 
     return pd.DataFrame({"prediction": predictions.astype(np.float32)})
 

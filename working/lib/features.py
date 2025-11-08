@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 def engineer_features(df: pd.DataFrame, feature_cols: Optional[List[str]] = None) -> pd.DataFrame:
@@ -108,6 +108,151 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+class FeaturePipeline:
+    """Lightweight feature engineering pipeline shared by training/inference."""
+
+    def __init__(
+        self,
+        *,
+        clip_quantile: float = 0.01,
+        missing_indicator_threshold: float = 0.05,
+        standardize: bool = True,
+        dtype: str = "float32",
+        extra_group_stats: bool = True,
+    ) -> None:
+        self.clip_quantile = clip_quantile
+        self.missing_indicator_threshold = missing_indicator_threshold
+        self.standardize = standardize
+        self.dtype = dtype
+        self.extra_group_stats = extra_group_stats
+
+        self.feature_columns: List[str] = []
+        self.numeric_columns: List[str] = []
+        self.categorical_columns: List[str] = []
+        self.fill_values: Dict[str, object] = {}
+        self.clip_bounds: Dict[str, tuple[float, float]] = {}
+        self.standardization_stats: Dict[str, tuple[float, float]] = {}
+        self.indicator_columns: List[str] = []
+        self.group_features: Dict[str, List[str]] = {}
+
+    def fit(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> "FeaturePipeline":
+        """Collect statistics needed for deterministic transforms."""
+
+        if feature_cols is None:
+            feature_cols = get_feature_columns(df)
+
+        self.feature_columns = list(feature_cols)
+        features = df[self.feature_columns].copy()
+        self.numeric_columns = features.select_dtypes(include=[np.number]).columns.tolist()
+        self.categorical_columns = [col for col in self.feature_columns if col not in self.numeric_columns]
+
+        # Fill values for consistent inference.
+        for col in self.numeric_columns:
+            series = pd.to_numeric(features[col], errors="coerce")
+            median = float(series.median(skipna=True)) if series.notnull().any() else 0.0
+            self.fill_values[col] = median
+
+            if self.clip_quantile > 0 and series.notnull().sum() > 10:
+                lower = float(series.quantile(self.clip_quantile))
+                upper = float(series.quantile(1 - self.clip_quantile))
+            else:
+                min_val = series.min(skipna=True)
+                max_val = series.max(skipna=True)
+                lower = float(min_val) if pd.notna(min_val) else float(fill_value)
+                upper = float(max_val) if pd.notna(max_val) else float(fill_value)
+            if lower == upper:
+                upper = lower + 1e-6
+            self.clip_bounds[col] = (lower, upper)
+
+            std = float(series.std(skipna=True))
+            self.standardization_stats[col] = (float(series.mean(skipna=True)), std if std > 0 else 1.0)
+
+        for col in self.categorical_columns:
+            modes = features[col].mode(dropna=True)
+            self.fill_values[col] = modes.iloc[0] if not modes.empty else "missing"
+
+        # Missing indicators for high-null columns.
+        null_rates = features.isnull().mean()
+        self.indicator_columns = [
+            col
+            for col, rate in null_rates.items()
+            if rate >= self.missing_indicator_threshold and col in self.feature_columns
+        ]
+
+        if self.extra_group_stats:
+            groups = get_feature_groups()
+            # Only keep valid columns in each group.
+            self.group_features = {
+                name: [col for col in cols if col in self.feature_columns]
+                for name, cols in groups.items()
+            }
+
+        return self
+
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply stored statistics to new data."""
+
+        if not self.feature_columns:
+            raise RuntimeError("FeaturePipeline must be fit before calling transform.")
+
+        features = df.reindex(columns=self.feature_columns, fill_value=np.nan).copy()
+
+        for col in self.numeric_columns:
+            series = pd.to_numeric(features[col], errors="coerce")
+            fill_value = self.fill_values.get(col, 0.0)
+            series = series.fillna(fill_value)
+            lower, upper = self.clip_bounds.get(col, (series.min(), series.max()))
+            series = series.clip(lower=lower, upper=upper)
+            if self.standardize:
+                mean, std = self.standardization_stats.get(col, (0.0, 1.0))
+                series = (series - mean) / (std if std > 0 else 1.0)
+            features[col] = series.astype(self.dtype)
+
+        for col in self.categorical_columns:
+            fill_value = self.fill_values.get(col, "missing")
+            features[col] = features[col].fillna(fill_value)
+
+        if self.indicator_columns:
+            indicator_data = {}
+            for col in self.indicator_columns:
+                source = df[col] if col in df.columns else pd.Series(np.nan, index=df.index)
+                indicator_data[f"{col}_is_missing"] = source.isnull().astype("int8")
+            indicator_df = pd.DataFrame(indicator_data, index=features.index)
+            features = pd.concat([features, indicator_df], axis=1)
+
+        if self.extra_group_stats and self.group_features:
+            group_frames = {}
+            for group_name, cols in self.group_features.items():
+                if not cols:
+                    continue
+                data = features[cols]
+                group_frames[f"{group_name}_row_mean"] = data.mean(axis=1).astype(self.dtype)
+                group_frames[f"{group_name}_row_std"] = data.std(axis=1).fillna(0).astype(self.dtype)
+            if group_frames:
+                group_df = pd.DataFrame(group_frames, index=features.index)
+                features = pd.concat([features, group_df], axis=1)
+
+        features = features.fillna(0)
+        return features
+
+    def fit_transform(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> pd.DataFrame:
+        return self.fit(df, feature_cols).transform(df)
+
+    @property
+    def output_columns(self) -> List[str]:
+        if not self.feature_columns:
+            raise RuntimeError("FeaturePipeline must be fit before accessing output columns.")
+        extra_cols = []
+        extra_cols.extend(f"{col}_is_missing" for col in self.indicator_columns)
+        if self.extra_group_stats:
+            for group_name, cols in self.group_features.items():
+                if not cols:
+                    continue
+                extra_cols.append(f"{group_name}_row_mean")
+                extra_cols.append(f"{group_name}_row_std")
+        return self.feature_columns + extra_cols
+
+
 def get_feature_columns(df: pd.DataFrame) -> list:
     """获取特征列名"""
     
@@ -139,5 +284,6 @@ __all__ = [
     "engineer_features",
     "handle_missing_values", 
     "add_statistical_features",
+    "FeaturePipeline",
     "get_feature_groups",
 ]

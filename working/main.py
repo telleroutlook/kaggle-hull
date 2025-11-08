@@ -8,7 +8,6 @@ import argparse
 import sys
 import os
 import pandas as pd
-import numpy as np
 from pathlib import Path
 
 # 添加lib目录到路径
@@ -22,9 +21,16 @@ else:
 import logging
 
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
-from lib.data import load_test_data, validate_data
-from lib.features import engineer_features, get_feature_columns
+from lib.data import load_test_data, load_train_data, validate_data
+from lib.features import FeaturePipeline
+from lib.model_registry import get_model_params, resolve_model_type
 from lib.models import HullModel, create_submission
+from lib.strategy import (
+    VolatilityOverlay,
+    optimize_scale_with_rolling_cv,
+    scale_to_allocation,
+    tune_allocation_scale,
+)
 from lib.utils import PerformanceTracker, save_logs, save_metrics, validate_submission
 
 # 尝试导入配置模块
@@ -49,7 +55,7 @@ def parse_args(argv=None):
     
     parser.add_argument(
         "--model-type",
-        choices=["baseline", "lightgbm", "xgboost", "ensemble"],
+        choices=["baseline", "lightgbm", "xgboost", "catboost", "ensemble"],
         default="baseline",
         help="选择模型类型 (默认: baseline)"
     )
@@ -79,6 +85,23 @@ def parse_args(argv=None):
         "--verbose",
         action="store_true",
         help="详细输出模式"
+    )
+    parser.add_argument(
+        "--risk-overlay-lookback",
+        type=int,
+        default=63,
+        help="风险overlay滚动窗口长度",
+    )
+    parser.add_argument(
+        "--risk-overlay-min-periods",
+        type=int,
+        default=21,
+        help="overlay开始生效最小历史长度",
+    )
+    parser.add_argument(
+        "--disable-risk-overlay",
+        action="store_true",
+        help="禁用波动率风险overlay",
     )
     
     # 处理不同的运行环境参数
@@ -117,7 +140,6 @@ def main():
     tracker = PerformanceTracker(logger=logger)
     
     print("🚀 Hull Tactical - Market Prediction 模型启动")
-    print(f"📋 模型类型: {args.model_type}")
     
     # 检测运行环境
     env = detect_run_environment()
@@ -137,6 +159,7 @@ def main():
         # 加载数据
         tracker.start_task("load_data")
         tracker.record_memory_usage()
+        train_data = load_train_data(data_paths)
         test_data = load_test_data(data_paths)
         
         if not validate_data(test_data, "test"):
@@ -148,12 +171,13 @@ def main():
         # 特征工程
         tracker.start_task("feature_engineering")
         tracker.record_memory_usage()
-        feature_cols = get_feature_columns(test_data)
-        features = engineer_features(test_data, feature_cols)
+        pipeline = FeaturePipeline()
+        train_features = pipeline.fit_transform(train_data)
+        test_features = pipeline.transform(test_data)
         
         if args.verbose:
-            print(f"🔧 特征数量: {len(feature_cols)}")
-            print(f"📊 特征形状: {features.shape}")
+            print(f"🔧 训练特征数量: {train_features.shape[1]}")
+            print(f"📊 推理特征形状: {test_features.shape}")
         
         tracker.record_memory_usage()
         tracker.end_task()
@@ -162,17 +186,55 @@ def main():
         tracker.start_task("model_prediction")
         tracker.record_memory_usage()
         
-        # 创建并训练模型（这里使用基线模型）
-        model = HullModel(model_type=args.model_type)
-        
-        # 注意：在实际应用中，这里应该加载训练好的模型
-        # 目前使用简单的随机预测作为演示
-        np.random.seed(42)
-        predictions = np.random.uniform(0, 2, size=len(test_data))
-        
+        model_type = resolve_model_type(args.model_type)
+        model_params = get_model_params(model_type)
+        model = HullModel(model_type=model_type, model_params=model_params)
+        target = train_data["forward_returns"].fillna(train_data["forward_returns"].median())
+        model.fit(train_features, target)
+
+        train_preds = model.predict(train_features, clip=False)
+        scale_result = optimize_scale_with_rolling_cv(train_preds, target.values)
+        allocation_scale = scale_result.get("scale", 20.0)
+        if allocation_scale is None:
+            tuning = tune_allocation_scale(train_preds, target.values)
+            allocation_scale = tuning.get("scale", 20.0)
+            scale_result = {
+                "cv_sharpe": tuning.get("strategy_sharpe", 0.0),
+                "strategy_sharpe": tuning.get("strategy_sharpe", 0.0),
+            }
+        if args.verbose:
+            print(
+                f"🎯 Allocation scale={allocation_scale:.2f}, "
+                f"CVSharpe={scale_result.get('cv_sharpe', 0):.4f}"
+            )
+
+        raw_test_preds = model.predict(test_features, clip=False)
+        predictions = scale_to_allocation(raw_test_preds, scale=allocation_scale)
+
         tracker.record_memory_usage()
         tracker.end_task()
-        
+
+        if not args.disable_risk_overlay:
+            overlay_source = None
+            if "lagged_forward_returns" in test_data.columns:
+                overlay_source = test_data["lagged_forward_returns"].to_numpy()
+            elif "lagged_market_forward_excess_returns" in test_data.columns:
+                overlay_source = test_data["lagged_market_forward_excess_returns"].to_numpy()
+
+            if overlay_source is not None:
+                overlay = VolatilityOverlay(
+                    lookback=args.risk_overlay_lookback,
+                    min_periods=args.risk_overlay_min_periods,
+                    reference_is_lagged=True,
+                )
+                overlay_result = overlay.transform(predictions, overlay_source)
+                predictions = overlay_result["allocations"]
+                if args.verbose:
+                    print(
+                        f"🛡️ Risk overlay applied ({overlay.breaches} caps), "
+                        f"mean scale={overlay_result['scaling_factors'].mean():.3f}"
+                    )
+
         # 创建提交文件
         tracker.start_task("create_submission")
         submission_df = create_submission(predictions, test_data['date_id'])
@@ -198,7 +260,9 @@ def main():
             'max_prediction': float(predictions.max()),
             'mean_prediction': float(predictions.mean()),
             'std_prediction': float(predictions.std()),
-            'model_type': args.model_type,
+            'allocation_scale': allocation_scale,
+            'train_sharpe': float(scale_result.get('cv_sharpe', 0.0)),
+            'model_type': model_type,
             'environment': env
         }
         
