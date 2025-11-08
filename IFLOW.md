@@ -143,19 +143,19 @@ python create_kaggle_archive.py
 
 ### 3. 运行模型
 
-有两种方式运行模型：
+推荐的运行方式如下：
 
-**方法1: 简单单元格版本**
-- 将 `kaggle_simple_cell.py` 的内容复制粘贴到单个Kaggle notebook单元格中
-- 运行单元格即可自动执行模型
+**方式1: Kaggle单元格脚本（推荐）**
+- 将 `kaggle_simple_cell_fixed.py` 的内容复制粘贴到单个Kaggle notebook单元格中
+- 运行单元格，脚本会自动查找 `/kaggle/input` 下的解压目录并执行 `working/inference_server.py`
 
-**方法2: 标准方式**
+**方式2: 手动命令行**
 - 在Notebook中解压上传的zip文件
-- 运行 `working/main.py`
+- 运行 `python working/inference_server.py`
 
 ### 4. 输出文件
 
-- 模型将在 `/kaggle/working/submission.parquet` 生成提交文件
+- 模型将在 `/kaggle/working/submission.parquet`（以及辅助的 `submission.csv`）生成提交文件
 - 确保预测值在0-2之间
 - 包含 `date_id` 和 `prediction` 两列
 

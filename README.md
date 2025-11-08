@@ -29,6 +29,16 @@
 ## 提交文件要求
 
 你必须使用提供的评估API提交竞赛作品，这确保模型不会"窥视"未来数据。对于每个交易日，你需要预测持有标普500指数的最优资金分配比例。由于允许一定杠杆，有效范围为0到2。更多细节请参阅示例notebook。
+
+### 推理服务器实现
+
+- 入口脚本：`working/inference_server.py`。
+- 该文件注册 `predict(test_batch)` 函数，使用在训练集上拟合的 `HullModel` 基线模型对每个批次进行推理，并自动将结果裁剪到 `[0, 2]` 区间，符合杠杆约束。
+- `predict` 支持 Polars/Pandas 输入，返回带有 `prediction` 列的 `DataFrame`，满足 `default_gateway` 的流式校验要求。
+- 通过 `kaggle_evaluation.default_inference_server.DefaultInferenceServer` 同时兼容：
+  - Kaggle 复现容器（调用 `serve()`）；
+  - Notebook/本地调试（调用 `run_local_gateway((data_dir,))`）。
+- 流程结束后会生成官方要求的 `submission.parquet`，并额外导出 `submission.csv` 以方便快速查看。
 ## 时间线
 
 这是一个预测竞赛，包含活跃的训练阶段和独立的预测阶段，模型将在预测阶段针对真实市场回报进行运行。

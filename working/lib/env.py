@@ -16,7 +16,12 @@ class DataPaths:
     
     train_data: Path
     test_data: Path
-    kaggle_evaluation: Path
+    evaluation_dir: Path
+
+    @property
+    def kaggle_evaluation(self) -> Path:
+        """向后兼容旧字段名称"""
+        return self.evaluation_dir
 
 
 @dataclass(frozen=True)
@@ -50,7 +55,7 @@ def get_data_paths(env: str) -> DataPaths:
     return DataPaths(
         train_data=base / "train.csv",
         test_data=base / "test.csv", 
-        kaggle_evaluation=base / "kaggle_evaluation"
+        evaluation_dir=base / "kaggle_evaluation"
     )
 
 

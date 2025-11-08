@@ -91,6 +91,11 @@ class HullModel:
     def cross_validate(self, X: pd.DataFrame, y: pd.Series, n_splits: int = 5) -> Dict[str, float]:
         """时间序列交叉验证"""
         
+        if not isinstance(y, (pd.Series, pd.DataFrame)):
+            y = pd.Series(y, index=X.index)
+        elif isinstance(y, pd.Series) and not y.index.equals(X.index):
+            y = y.reindex(X.index)
+
         tscv = TimeSeriesSplit(n_splits=n_splits)
         mse_scores = []
         mae_scores = []

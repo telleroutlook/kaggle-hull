@@ -15,6 +15,8 @@ def create_kaggle_archive():
     files_to_include = [
         # 主模型文件
         "working/main.py",
+        "working/main_fixed.py",
+        "working/inference_server.py",
         "working/__init__.py",
         "working/config.ini",
         
@@ -33,7 +35,7 @@ def create_kaggle_archive():
         "KAGGLE_DEPLOYMENT.md",
         
         # Kaggle脚本
-        "kaggle_simple_cell.py",
+        "kaggle_simple_cell_fixed.py",
         "create_kaggle_archive.py",
     ]
     

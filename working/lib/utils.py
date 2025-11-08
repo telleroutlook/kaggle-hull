@@ -114,11 +114,45 @@ def save_metrics(metrics: Dict[str, float], metrics_path: Path):
     metrics_df = pd.DataFrame([metrics])
     metrics_df['timestamp'] = datetime.now().isoformat()
     
-    if metrics_path.exists():
-        existing_df = pd.read_csv(metrics_path)
-        metrics_df = pd.concat([existing_df, metrics_df], ignore_index=True)
+    if metrics_path.exists() and metrics_path.stat().st_size > 0:
+        try:
+            existing_df = pd.read_csv(metrics_path)
+            metrics_df = pd.concat([existing_df, metrics_df], ignore_index=True)
+        except pd.errors.EmptyDataError:
+            # 已存在文件但没有内容，直接覆盖
+            pass
     
     metrics_df.to_csv(metrics_path, index=False)
+
+
+def write_result_json(
+    succeeded: bool,
+    result_path: Optional[Path] = None,
+    error_type: Optional[int] = None,
+    error_name: Optional[str] = None,
+    error_details: Optional[str] = None,
+):
+    """Persist Kaggle evaluation status so the platform doesn't treat the run as a system error."""
+
+    if result_path is None:
+        result_path = Path("result.json")
+
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: Dict[str, Any] = {"Succeeded": bool(succeeded)}
+
+    if not succeeded:
+        # Kaggle expects these fields when a run fails; fall back to the default gateway error codes.
+        payload.update(
+            {
+                "ErrorType": error_type if error_type is not None else 5,
+                "ErrorName": error_name or "GATEWAY_RAISED_EXCEPTION",
+                "ErrorDetails": (error_details or "")[:8000],
+            }
+        )
+
+    with open(result_path, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp)
 
 
 def print_progress(current: int, total: int, prefix: str = "", suffix: str = ""):
@@ -167,4 +201,5 @@ __all__ = [
     "save_metrics",
     "print_progress",
     "validate_submission",
+    "write_result_json",
 ]

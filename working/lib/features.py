@@ -24,6 +24,24 @@ def engineer_features(df: pd.DataFrame, feature_cols: Optional[List[str]] = None
     
     # 添加基础统计特征
     features = add_statistical_features(features)
+
+    # 为了在训练/推理阶段保持稳定，确保没有缺失值
+    features = features.ffill()
+    numeric_cols = features.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        median_values = features[numeric_cols].median()
+        features[numeric_cols] = features[numeric_cols].fillna(median_values)
+        if features[numeric_cols].isnull().any().any():
+            features[numeric_cols] = features[numeric_cols].fillna(0)
+    non_numeric_cols = [col for col in features.columns if col not in numeric_cols]
+    for col in non_numeric_cols:
+        if features[col].isnull().any():
+            mode_series = features[col].mode()
+            fill_value = mode_series.iloc[0] if not mode_series.empty else "unknown"
+            features[col] = features[col].fillna(fill_value)
+
+    if features.isnull().any().any():
+        features = features.fillna(0)
     
     return features
 
@@ -72,8 +90,11 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
     for window in rolling_windows:
         if len(df) >= window:
             for col in selected_cols:
-                new_features[f'{col}_rolling_mean_{window}'] = df[col].rolling(window=window).mean()
-                new_features[f'{col}_rolling_std_{window}'] = df[col].rolling(window=window).std()
+                rolling_mean = df[col].rolling(window=window, min_periods=window).mean()
+                rolling_std = df[col].rolling(window=window, min_periods=window).std()
+                # 向后平移一步，避免使用当前行的信息
+                new_features[f'{col}_rolling_mean_{window}'] = rolling_mean.shift(1)
+                new_features[f'{col}_rolling_std_{window}'] = rolling_std.shift(1)
     
     # 添加滞后特征
     for lag in lag_periods:
@@ -81,7 +102,7 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
             new_features[f'{col}_lag_{lag}'] = df[col].shift(lag)
     
     # 一次性添加所有新特征，避免DataFrame碎片化
-    new_features_df = pd.DataFrame(new_features)
+    new_features_df = pd.DataFrame(new_features, index=df.index)
     df = pd.concat([df, new_features_df], axis=1)
     
     return df

@@ -1,4 +1,4 @@
-# Hull Tactical - Market Prediction - Kaggle Cell Version
+# Hull Tactical - Market Prediction - Kaggle Cell Version (Fixed)
 # 将整个代码复制粘贴到单个Kaggle notebook cell中
 
 import os
@@ -13,11 +13,14 @@ def find_solver_path():
     
     # Kaggle可能解压缩模型的不同路径
     possible_paths = [
-        "/kaggle/input/hull-solver",  # 直接数据集根目录
-        "/kaggle/input/hull-solver/main.py",  # 直接解压包含main.py
-        "/kaggle/input/hull-solver/working/main.py",  # 包含working目录
-        "/kaggle/input/hull-solver/other/default/1",  # 默认解压路径
-        "/kaggle/input/hull-solver/other/default/1/working/main.py",  # 嵌套解压
+        "/kaggle/input/hull01",  # 当前上传的数据集根目录
+        "/kaggle/input/hull01/main.py",
+        "/kaggle/input/hull01/working/main.py",
+        "/kaggle/input/hull01/other/default/1",
+        "/kaggle/input/hull01/other/default/1/working/main.py",
+        "/kaggle/input/hull-tactical-solver",
+        "/kaggle/input/hull-tactical-solver/main.py",
+        "/kaggle/input/hull-tactical-solver/working/main.py",
     ]
     
     # 首先检查特定的路径是否存在
@@ -91,9 +94,10 @@ else:
             print(f"    内容: {os.listdir(item_path)}")
     # 尝试备用路径
     possible_fallbacks = [
-        "/kaggle/input/hull-solver",
-        "/kaggle/input/hull-solver/working",
+        "/kaggle/input/hull01",
+        "/kaggle/input/hull01/working",
         "/kaggle/input/hull-tactical-solver",
+        "/kaggle/input/hull-tactical-solver/working",
     ]
     for fallback in possible_fallbacks:
         if os.path.exists(fallback):
@@ -102,7 +106,7 @@ else:
             break
     else:
         print("❌ 未找到有效的备用路径")
-        actual_solver_path = "/kaggle/input/hull-solver"
+        actual_solver_path = "/kaggle/input/hull01"
 
 print(f"最终模型路径: {actual_solver_path}")
 
@@ -129,9 +133,36 @@ else:
 
 # 安装依赖（Kaggle notebook通常已包含这些）
 print("\n检查依赖...")
-# Kaggle notebook通常已包含numpy, pandas, scikit-learn等
-# 如果需要，取消注释下面的行：
-# !pip install numpy>=1.24 pandas>=2.0 scikit-learn>=1.3
+
+def check_package(pkg_name, import_name=None):
+    """Import package and print version for quick environment sanity check."""
+    name = import_name or pkg_name
+    try:
+        module = __import__(name)
+        version = getattr(module, "__version__", "<unknown>")
+        print(f"✅ {pkg_name} {version}")
+        return True
+    except ImportError as exc:
+        print(f"❌ {pkg_name} 未找到: {exc}")
+        return False
+
+deps = [
+    ("numpy", None),
+    ("pandas", None),
+    ("scikit-learn", "sklearn"),
+    ("lightgbm", None),
+    ("xgboost", None),
+    ("catboost", None),
+    ("pyarrow", None),
+    ("psutil", None),
+]
+
+missing = [pkg for pkg, import_name in deps if not check_package(pkg, import_name)]
+need_dependency_install = bool(missing)
+if missing:
+    print("⚠️ 上述依赖缺失，若在本地运行请先安装，Kaggle 提交需将 wheel 一起上传。")
+else:
+    print("环境依赖完整，可继续运行。")
 
 # 设置数据路径
 print("\n🚀 启动Hull Tactical - Market Prediction模型...")
@@ -143,16 +174,34 @@ try:
     print(f"切换到模型目录: {os.getcwd()}")
     
     # 检查是否需要安装额外依赖
-    requirements_path = os.path.join(actual_solver_path, "requirements.txt")
-    if os.path.exists(requirements_path):
-        print("安装requirements.txt中的依赖...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], 
-                      capture_output=True, text=True)
+    # requirements.txt 可能位于working目录或其父目录
+    requirements_candidates = [
+        os.path.join(actual_solver_path, "requirements.txt"),
+        os.path.join(os.path.dirname(actual_solver_path), "requirements.txt"),
+    ]
+    requirements_path = next((path for path in requirements_candidates if os.path.exists(path)), None)
     
-    # 运行模型
-    print("运行模型...")
+    should_install = need_dependency_install or os.environ.get("FORCE_PIP_INSTALL") == "1"
+
+    if requirements_path and should_install:
+        print(f"安装依赖: {requirements_path}")
+        pip_cmd = [sys.executable, "-m", "pip", "install", "-r", requirements_path]
+        pip_result = subprocess.run(pip_cmd, capture_output=True, text=True)
+        if pip_result.returncode != 0:
+            print("❌ pip安装失败，输出如下：")
+            print(pip_result.stdout)
+            print(pip_result.stderr)
+        else:
+            print("✅ 依赖安装完成")
+    elif requirements_path and not should_install:
+        print("requirements.txt 已找到，但环境依赖齐全，默认跳过 pip 安装。设置 FORCE_PIP_INSTALL=1 可强制执行。")
+    else:
+        print("未找到requirements.txt，跳过依赖安装")
+    
+    # 运行推理服务器 + 网关流程
+    print("运行评估API推理服务器...")
     result = subprocess.run([
-        sys.executable, "working/main.py"
+        sys.executable, "inference_server.py"
     ], capture_output=True, text=True)
     
     print("模型输出:")
@@ -162,11 +211,15 @@ try:
         print(result.stderr)
     
     # 检查提交文件
-    submission_path = "/kaggle/working/submission.parquet"
-    if os.path.exists(submission_path):
-        print(f"\n✅ 成功！提交文件已创建: {submission_path}")
+    submission_parquet = "/kaggle/working/submission.parquet"
+    submission_csv = "/kaggle/working/submission.csv"
+    if os.path.exists(submission_parquet) or os.path.exists(submission_csv):
+        if os.path.exists(submission_parquet):
+            print(f"\n✅ 成功！生成: {submission_parquet}")
+        if os.path.exists(submission_csv):
+            print(f"✅ 同步生成: {submission_csv}")
         print("📊 模型运行完成")
-        print("\n📁 从输出面板下载submission.parquet")
+        print("\n📁 从输出面板下载submission.parquet (或 submission.csv)")
     else:
         print("❌ 未创建submission.parquet - 请检查上面的错误")
         
