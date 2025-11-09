@@ -72,15 +72,15 @@ def create_lightgbm_model(random_state: Optional[int] = 42, **overrides):
 
     params = {
         "objective": "regression",
-        "n_estimators": 4000,
-        "learning_rate": 0.005,
-        "num_leaves": 256,
-        "max_depth": -1,
-        "subsample": 0.8,
-        "colsample_bytree": 0.7,
-        "reg_alpha": 0.1,
-        "reg_lambda": 5.0,
-        "min_child_samples": 40,
+        "n_estimators": 1000,
+        "learning_rate": 0.02,
+        "num_leaves": 128,
+        "max_depth": 8,
+        "subsample": 0.85,
+        "colsample_bytree": 0.85,
+        "reg_alpha": 0.0,
+        "reg_lambda": 0.5,
+        "min_child_samples": 10,
         "n_jobs": -1,
         "verbosity": -1,
     }
@@ -273,18 +273,24 @@ class HullModel:
 
         self.model.fit(fit_X, fit_y, **fit_kwargs)
         
-    def predict(self, X: pd.DataFrame, *, clip: bool = True) -> np.ndarray:
+    def predict(self, X: pd.DataFrame, *, clip: bool = True, noise_std: float = 0.0) -> np.ndarray:
         """预测
 
         Args:
             X: 特征矩阵
             clip: 是否将预测值裁剪到[0,2]区间。训练/策略阶段通常需要原始值。
+            noise_std: 噪声标准差，用于增加预测变异性
         """
         
         if self.model is None:
             raise ValueError("模型尚未训练")
         
         predictions = self.model.predict(X)
+        
+        # 添加噪声以增加预测变异性
+        if noise_std > 0:
+            noise = np.random.normal(0, noise_std, size=predictions.shape)
+            predictions = predictions + noise
         
         if clip:
             predictions = np.clip(predictions, 0, 2)

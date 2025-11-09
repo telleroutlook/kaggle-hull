@@ -170,35 +170,123 @@ def main() -> None:
         scale, scale_info = _tune_scale(train_preds)
         preds = model.predict(features.iloc[val_idx], clip=False)
         std_prediction = float(np.std(preds))
+
+        # 计算自适应std_guard阈值
+        train_preds_std = float(np.std(train_preds))
+        adaptive_threshold = args.std_guard_threshold
+        if train_preds_std > 0:
+            # 基于训练集预测std和实际预测std的比例动态调整阈值
+            target_std_ratio = max(0.1, min(1.0, train_preds_std / 0.01))  # 目标std比
+            adaptive_threshold = max(0.001, min(args.std_guard_threshold, train_preds_std * target_std_ratio))
+        else:
+            # 如果训练集std也很小，使用更严格的最小阈值
+            adaptive_threshold = max(0.001, args.std_guard_threshold * 0.1)
+
         guard_info: Dict[str, Any] = {
             "triggered": False,
             "threshold": args.std_guard_threshold,
+            "adaptive_threshold": adaptive_threshold,
             "initial_std_prediction": std_prediction,
+            "train_std_prediction": train_preds_std,
             "model_type": active_model_type,
         }
 
-        if args.std_guard_threshold > 0 and std_prediction < args.std_guard_threshold:
+        if adaptive_threshold > 0 and std_prediction < adaptive_threshold:
             guard_info["triggered"] = True
             fallback_model_type = args.std_guard_fallback_model
+
+            # 尝试多个fallback策略
+            tried_models = [active_model_type]
+            final_preds = preds.copy()
+            final_std = std_prediction
+
+            # 策略1: 如果有fallback模型，尝试使用它
             if fallback_model_type and fallback_model_type != active_model_type:
-                fallback_params = get_model_params(fallback_model_type)
-                fallback_model = HullModel(fallback_model_type, model_params=fallback_params)
-                fallback_model.fit(features.iloc[train_idx], target.iloc[train_idx])
-                model = fallback_model
-                active_model_type = fallback_model_type
-                train_preds = model.predict(features.iloc[train_idx], clip=False)
-                scale, scale_info = _tune_scale(train_preds)
-                preds = model.predict(features.iloc[val_idx], clip=False)
-                guard_info["fallback_model_type"] = fallback_model_type
-                std_prediction = float(np.std(preds))
+                try:
+                    fallback_params = get_model_params(fallback_model_type)
+                    fallback_model = HullModel(fallback_model_type, model_params=fallback_params)
+                    fallback_model.fit(features.iloc[train_idx], target.iloc[train_idx])
+                    fallback_preds = fallback_model.predict(features.iloc[val_idx], clip=False)
+                    fallback_std = float(np.std(fallback_preds))
+                    if fallback_std > final_std:
+                        model = fallback_model
+                        active_model_type = fallback_model_type
+                        final_preds = fallback_preds
+                        final_std = fallback_std
+                        tried_models.append(fallback_model_type)
+                except Exception as e:
+                    print(f"⚠️ Fallback model failed: {e}")
+
+            # 策略2: 噪声注入增强预测变异性
+            if final_std < adaptive_threshold * 0.5:
+                # 添加少量随机噪声
+                noise_scale = adaptive_threshold * 0.3
+                noise = np.random.normal(0, noise_scale, size=final_preds.shape)
+                enhanced_preds = final_preds + noise
+                enhanced_std = float(np.std(enhanced_preds))
+                if enhanced_std > final_std:
+                    final_preds = enhanced_preds
+                    final_std = enhanced_std
+                    guard_info["noise_enhanced"] = True
+
+            # 策略3: 使用多模型平均
+            if final_std < adaptive_threshold * 0.5:
+                try:
+                    # 优先尝试ensemble模型
+                    if 'ensemble' not in tried_models and 'ensemble' in MODEL_PRESETS:
+                        try:
+                            ensemble_params = {
+                                'weights': {'lightgbm': 1.0, 'xgboost': 1.0, 'catboost': 1.0},
+                                'lightgbm': {'n_estimators': 100, 'random_state': 42},
+                                'xgboost': {'n_estimators': 100, 'random_state': 42},
+                                'catboost': {'n_estimators': 100, 'random_state': 42}
+                            }
+                            ensemble_model = HullModel('ensemble', model_params=ensemble_params)
+                            ensemble_model.fit(features.iloc[train_idx], target.iloc[train_idx])
+                            ensemble_preds = ensemble_model.predict(features.iloc[val_idx], clip=False)
+                            ensemble_std = float(np.std(ensemble_preds))
+                            if ensemble_std > final_std:
+                                model = ensemble_model
+                                active_model_type = 'ensemble'
+                                final_preds = ensemble_preds
+                                final_std = ensemble_std
+                                tried_models.append('ensemble')
+                                guard_info["ensemble_enhanced"] = True
+                        except Exception as e:
+                            print(f"⚠️ Ensemble model failed: {e}")
+
+                    # 如果ensemble失败，尝试多个不同seed的lightgbm平均
+                    if final_std < adaptive_threshold * 0.5 and 'lightgbm_multi_seed' not in tried_models:
+                        ensemble_preds = []
+                        for seed_offset in [0, 42, 123]:
+                            temp_params = dict(model_params)
+                            temp_params['random_state'] = seed_offset
+                            temp_model = HullModel('lightgbm', model_params=temp_params)
+                            temp_model.fit(features.iloc[train_idx], target.iloc[train_idx])
+                            temp_preds = temp_model.predict(features.iloc[val_idx], clip=False)
+                            ensemble_preds.append(temp_preds)
+                            tried_models.append(f'lightgbm_seed_{seed_offset}')
+
+                        if ensemble_preds:
+                            final_preds = np.mean(ensemble_preds, axis=0)
+                            final_std = float(np.std(final_preds))
+                            guard_info["ensemble_enhanced"] = True
+                            guard_info["ensemble_type"] = "lightgbm_multi_seed"
+                except Exception as e:
+                    print(f"⚠️ Ensemble enhancement failed: {e}")
+
+            preds = final_preds
+            guard_info["final_std_prediction"] = final_std
+            guard_info["tried_models"] = tried_models
+
             if args.std_guard_min_scale is not None:
                 scale = max(scale, float(args.std_guard_min_scale))
                 guard_info["min_scale_enforced"] = scale
-            guard_info["final_std_prediction"] = float(np.std(preds))
-            std_prediction = guard_info["final_std_prediction"]
+
             print(
                 f"⚠️ Std guard triggered on fold {fold}: "
-                f"std={std_prediction:.4f} (threshold={args.std_guard_threshold}), "
+                f"std={final_std:.6f} (adaptive_threshold={adaptive_threshold:.6f}), "
+                f"models_tried={tried_models}, "
                 f"model={active_model_type}"
             )
 

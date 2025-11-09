@@ -120,7 +120,7 @@ class FeaturePipeline:
         *,
         clip_quantile: float = 0.01,
         missing_indicator_threshold: float = 0.05,
-        standardize: bool = True,
+        standardize: bool = False,
         dtype: str = "float32",
         extra_group_stats: bool = True,
     ) -> None:
@@ -243,7 +243,149 @@ class FeaturePipeline:
                 group_df = pd.DataFrame(group_frames, index=features.index)
                 features = pd.concat([features, group_df], axis=1)
 
+        # 添加增强特征工程
+        features = self._add_enhanced_features(features, df)
+        features = self._add_lagged_interactions(features, df)
+
         features = features.fillna(0)
+        return features
+
+    def _add_enhanced_features(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
+        """添加增强特征工程技术指标和历史信号"""
+        
+        enhanced_frames = []
+        
+        # 1. 滞后特征交互
+        lagged_features = [col for col in original_df.columns if col.startswith('lagged_')]
+        for lag_col in lagged_features:
+            if lag_col in original_df.columns:
+                # 与主要市场特征交互
+                for market_col in ['M1', 'M2', 'M3', 'M4', 'M5', 'P1', 'P2', 'P3', 'V1', 'V2']:
+                    if market_col in features.columns:
+                        interaction_name = f"{lag_col}_x_{market_col}"
+                        interaction = features[market_col] * original_df[lag_col]
+                        interaction = interaction.fillna(0).astype(self.dtype)
+                        enhanced_frames.append(interaction.to_frame(interaction_name))
+        
+        # 2. 动量增强特征
+        if 'MOM1' in features.columns and 'M1' in original_df.columns:
+            momentum_enhanced = features['MOM1'] * original_df['M1']
+            enhanced_frames.append(momentum_enhanced.fillna(0).astype(self.dtype).to_frame('MOM1_M1_enhanced'))
+        
+        # 3. 波动率状态特征
+        if 'V1' in features.columns:
+            vol_zscore = (features['V1'] - features['V1'].rolling(20).mean().fillna(features['V1'])) / features['V1'].rolling(20).std().fillna(1)
+            enhanced_frames.append(vol_zscore.fillna(0).astype(self.dtype).to_frame('V1_volatility_state'))
+        
+        # 4. 技术指标增强
+        enhanced_frames.extend(self._add_technical_indicators(original_df, features))
+        
+        # 5. 交叉特征
+        enhanced_frames.extend(self._add_cross_features(features))
+        
+        if enhanced_frames:
+            enhanced_df = pd.concat(enhanced_frames, axis=1)
+            features = pd.concat([features, enhanced_df], axis=1)
+        
+        return features
+
+    def _add_technical_indicators(self, original_df: pd.DataFrame, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """添加技术指标特征"""
+        
+        tech_indicators = []
+        
+        # RSI (Relative Strength Index)
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            delta = price.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            tech_indicators.append(rsi.fillna(50).astype(self.dtype).to_frame('rsi_14'))
+        
+        # 移动平均交叉
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            ma_5 = price.rolling(5).mean()
+            ma_20 = price.rolling(20).mean()
+            ma_cross = ma_5 / ma_20
+            tech_indicators.append(ma_cross.fillna(1).astype(self.dtype).to_frame('ma_cross_ratio'))
+        
+        # 布林带
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            ma_20 = price.rolling(20).mean()
+            std_20 = price.rolling(20).std()
+            bb_upper = ma_20 + (2 * std_20)
+            bb_lower = ma_20 - (2 * std_20)
+            bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+            tech_indicators.append(bb_position.fillna(0.5).astype(self.dtype).to_frame('bollinger_position'))
+        
+        return tech_indicators
+
+    def _add_cross_features(self, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """添加特征交叉项"""
+        
+        cross_features = []
+        
+        # 重要的特征交叉
+        important_crosses = [
+            ('M1', 'M2', 'market_corr'),
+            ('P1', 'V1', 'price_vol_interaction'),
+            ('E1', 'E2', 'economic_dual'),
+            ('MOM1', 'M1', 'momentum_market_interaction'),
+        ]
+        
+        for col1, col2, name in important_crosses:
+            if col1 in features.columns and col2 in features.columns:
+                cross_product = features[col1] * features[col2]
+                cross_features.append(cross_product.fillna(0).astype(self.dtype).to_frame(name))
+        
+        # 比率特征
+        ratio_features = [
+            ('P1', 'P2', 'price_ratio'),
+            ('V1', 'V2', 'vol_ratio'),
+            ('M1', 'M2', 'market_ratio'),
+        ]
+        
+        for col1, col2, name in ratio_features:
+            if col1 in features.columns and col2 in features.columns:
+                ratio = features[col1] / (features[col2] + 1e-8)
+                ratio = ratio.replace([np.inf, -np.inf], 0).fillna(1)
+                cross_features.append(ratio.astype(self.dtype).to_frame(name))
+        
+        return cross_features
+
+    def _add_lagged_interactions(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
+        """添加滞后特征的高级交互"""
+        
+        lagged_cols = [col for col in original_df.columns if col.startswith('lagged_')]
+        
+        if not lagged_cols:
+            return features
+        
+        interaction_frames = []
+        
+        # 滞后特征与主要特征的多阶交互
+        for lag_col in lagged_cols:
+            if lag_col not in original_df.columns:
+                continue
+                
+            # 滞后特征的变化率
+            lag_change = original_df[lag_col].pct_change().fillna(0)
+            interaction_frames.append(lag_change.astype(self.dtype).to_frame(f"{lag_col}_change_rate"))
+            
+            # 滞后特征与主要市场特征的时间交互
+            for market_col in ['M1', 'M2', 'M3', 'V1', 'V2']:
+                if market_col in features.columns:
+                    time_interaction = features[market_col] * original_df[lag_col].shift(1)
+                    interaction_frames.append(time_interaction.fillna(0).astype(self.dtype).to_frame(f"{lag_col}_x_{market_col}_lag1"))
+        
+        if interaction_frames:
+            interaction_df = pd.concat(interaction_frames, axis=1)
+            features = pd.concat([features, interaction_df], axis=1)
+        
         return features
 
     def fit_transform(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> pd.DataFrame:
