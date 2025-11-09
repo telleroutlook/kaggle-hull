@@ -11,6 +11,13 @@ from typing import Dict, cast
 import numpy as np
 import pandas as pd
 
+# 导入警告处理器
+try:
+    from warnings_handler import ensure_warnings_configured
+    ensure_warnings_configured()
+except ImportError:
+    pass
+
 # Ensure the Kaggle evaluation helpers are importable in both local and Kaggle environments.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EVALUATION_SEARCH_ROOTS = [

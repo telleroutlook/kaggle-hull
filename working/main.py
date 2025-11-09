@@ -21,6 +21,13 @@ else:
 
 import logging
 
+# 导入警告处理器
+try:
+    from warnings_handler import ensure_warnings_configured
+    ensure_warnings_configured()
+except ImportError:
+    pass
+
 from lib.artifacts import load_first_available_oof, oof_artifact_candidates
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
 from lib.data import load_test_data, load_train_data, validate_data

@@ -46,11 +46,17 @@ def engineer_features(
 
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    """处理缺失值"""
+    """处理缺失值和无穷值"""
     
     # 对于数值特征，使用中位数填充
     numeric_cols = df.select_dtypes(include=[np.number]).columns
-    df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+    for col in numeric_cols:
+        # 替换无穷值为NaN，然后进行填充
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+        # 使用中位数填充
+        df[col] = df[col].fillna(df[col].median())
+        # 如果中位数也是NaN，使用0填充
+        df[col] = df[col].fillna(0.0)
     
     # 对于分类特征，使用众数填充
     categorical_cols = df.select_dtypes(include=['object']).columns
@@ -210,9 +216,22 @@ class FeaturePipeline:
 
         for col in self.numeric_columns:
             series = pd.to_numeric(features[col], errors="coerce")
+            # Replace inf values with NaN first
+            series = series.replace([np.inf, -np.inf], np.nan)
             fill_value = self.fill_values.get(col, 0.0)
             series = series.fillna(fill_value)
-            lower, upper = self.clip_bounds.get(col, (series.min(), series.max()))
+            
+            # Get safe clip bounds
+            if self.clip_bounds.get(col):
+                lower, upper = self.clip_bounds[col]
+            else:
+                # Use safe bounds that exclude inf values
+                valid_series = series[np.isfinite(series)] if len(series[np.isfinite(series)]) > 0 else series
+                if len(valid_series) > 0:
+                    lower, upper = valid_series.min(), valid_series.max()
+                else:
+                    lower, upper = -10.0, 10.0
+            
             series = series.clip(lower=lower, upper=upper)
             if self.standardize:
                 mean, std = self.standardization_stats.get(col, (0.0, 1.0))

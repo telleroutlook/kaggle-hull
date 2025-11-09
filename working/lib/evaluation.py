@@ -12,12 +12,25 @@ from typing import Dict, Tuple
 def calculate_sharpe_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> float:
     """计算夏普比率"""
     
+    # Convert to numpy array and handle inf/nan values
+    returns = np.asarray(returns, dtype=float)
+    returns = np.where(np.isfinite(returns), returns, 0.0)
+    
     excess_returns = returns - risk_free_rate
     
-    if len(excess_returns) == 0 or np.std(excess_returns) == 0:
+    if len(excess_returns) == 0:
         return 0.0
     
-    return np.mean(excess_returns) / np.std(excess_returns)
+    # Check for valid standard deviation
+    std_dev = np.std(excess_returns)
+    if not np.isfinite(std_dev) or std_dev == 0:
+        return 0.0
+    
+    mean_return = np.mean(excess_returns)
+    if not np.isfinite(mean_return):
+        return 0.0
+    
+    return mean_return / std_dev
 
 
 def calculate_volatility_adjusted_sharpe(returns: np.ndarray, 
@@ -75,25 +88,58 @@ def backtest_strategy(allocation: np.ndarray, market_returns: np.ndarray,
                      risk_free_rate: float = 0.0) -> Dict[str, float]:
     """回测策略性能"""
     
+    # Convert to numpy arrays and clean data
+    allocation = np.asarray(allocation, dtype=float)
+    market_returns = np.asarray(market_returns, dtype=float)
+    
+    # Replace inf/nan values with safe defaults
+    allocation = np.where(np.isfinite(allocation), allocation, 1.0)
+    market_returns = np.where(np.isfinite(market_returns), market_returns, 0.0)
+    
     # 计算策略收益
     strategy_returns = allocation * market_returns
     
-    # 计算指标
-    total_return = np.prod(1 + strategy_returns) - 1
-    market_total_return = np.prod(1 + market_returns) - 1
-    
-    metrics = {
-        'strategy_total_return': total_return,
-        'market_total_return': market_total_return,
-        'excess_return': total_return - market_total_return,
-        'strategy_sharpe': calculate_sharpe_ratio(strategy_returns, risk_free_rate),
-        'market_sharpe': calculate_sharpe_ratio(market_returns, risk_free_rate),
-        'strategy_volatility': np.std(strategy_returns),
-        'market_volatility': np.std(market_returns),
-        'max_allocation': np.max(allocation),
-        'min_allocation': np.min(allocation),
-        'mean_allocation': np.mean(allocation),
-    }
+    # 计算指标，添加错误处理
+    try:
+        # Safe computation of total returns
+        strategy_returns_safe = np.where(np.isfinite(strategy_returns), strategy_returns, 0.0)
+        market_returns_safe = np.where(np.isfinite(market_returns), market_returns, 0.0)
+        
+        total_return = np.prod(1 + strategy_returns_safe) - 1
+        market_total_return = np.prod(1 + market_returns_safe) - 1
+        
+        # Handle potential overflow in prod calculation
+        if not np.isfinite(total_return):
+            total_return = 0.0
+        if not np.isfinite(market_total_return):
+            market_total_return = 0.0
+            
+        metrics = {
+            'strategy_total_return': total_return,
+            'market_total_return': market_total_return,
+            'excess_return': total_return - market_total_return,
+            'strategy_sharpe': calculate_sharpe_ratio(strategy_returns, risk_free_rate),
+            'market_sharpe': calculate_sharpe_ratio(market_returns, risk_free_rate),
+            'strategy_volatility': np.std(strategy_returns) if len(strategy_returns) > 0 else 0.0,
+            'market_volatility': np.std(market_returns) if len(market_returns) > 0 else 0.0,
+            'max_allocation': np.max(allocation) if len(allocation) > 0 else 0.0,
+            'min_allocation': np.min(allocation) if len(allocation) > 0 else 0.0,
+            'mean_allocation': np.mean(allocation) if len(allocation) > 0 else 0.0,
+        }
+    except (OverflowError, ValueError, ZeroDivisionError):
+        # Fallback metrics in case of calculation errors
+        metrics = {
+            'strategy_total_return': 0.0,
+            'market_total_return': 0.0,
+            'excess_return': 0.0,
+            'strategy_sharpe': 0.0,
+            'market_sharpe': 0.0,
+            'strategy_volatility': 0.0,
+            'market_volatility': 0.0,
+            'max_allocation': 1.0,
+            'min_allocation': 1.0,
+            'mean_allocation': 1.0,
+        }
     
     return metrics
 
