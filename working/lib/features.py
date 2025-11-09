@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
-import pandas as pd
+import hashlib
+import json
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
 import numpy as np
-from typing import Dict, Iterable, List, Optional
+import pandas as pd
 
 from .data import get_feature_columns as data_get_feature_columns
 
@@ -33,7 +36,7 @@ def engineer_features(
         feature_cols = data_get_feature_columns(df)
 
     feature_view = df[feature_cols].copy()
-    active_pipeline = pipeline or FeaturePipeline(**(pipeline_kwargs or {}))
+    active_pipeline = pipeline or build_feature_pipeline(**(pipeline_kwargs or {}))
     features = (
         active_pipeline.fit_transform(feature_view, feature_cols)
         if pipeline is None
@@ -121,6 +124,18 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
 class FeaturePipeline:
     """Lightweight feature engineering pipeline shared by training/inference."""
 
+    _CONFIG_FIELDS = (
+        "clip_quantile",
+        "missing_indicator_threshold",
+        "standardize",
+        "dtype",
+        "extra_group_stats",
+        "enable_feature_selection",
+        "max_features",
+        "stateful",
+        "stateful_max_history",
+    )
+
     def __init__(
         self,
         *,
@@ -129,12 +144,20 @@ class FeaturePipeline:
         standardize: bool = False,
         dtype: str = "float32",
         extra_group_stats: bool = True,
+        enable_feature_selection: bool = False,
+        max_features: int = 300,
+        stateful: bool = False,
+        stateful_max_history: int = 256,
     ) -> None:
         self.clip_quantile = clip_quantile
         self.missing_indicator_threshold = missing_indicator_threshold
         self.standardize = standardize
         self.dtype = dtype
         self.extra_group_stats = extra_group_stats
+        self.enable_feature_selection = enable_feature_selection
+        self.max_features = max_features
+        self.stateful = stateful
+        self.stateful_max_history = max(1, int(stateful_max_history))
 
         self.feature_columns: List[str] = []
         self.numeric_columns: List[str] = []
@@ -145,6 +168,9 @@ class FeaturePipeline:
         self.indicator_columns: List[str] = []
         self.group_features: Dict[str, List[str]] = {}
         self._cached_output_columns: Optional[List[str]] = None
+        self.selected_features: Optional[List[str]] = None
+        self.feature_importance: Optional[Dict[str, float]] = None
+        self._history_buffer: Optional[pd.DataFrame] = None
 
     def fit(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> "FeaturePipeline":
         """Collect statistics needed for deterministic transforms."""
@@ -204,6 +230,15 @@ class FeaturePipeline:
                 for name, cols in groups.items()
             }
 
+        # 特征选择
+        if self.enable_feature_selection and self.feature_importance:
+            # 根据重要性排序选择特征
+            sorted_features = sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)
+            self.selected_features = [feat for feat, _ in sorted_features[:self.max_features]]
+        
+        # Reset any streaming state because fit has been rerun.
+        self._history_buffer = None
+
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -211,6 +246,18 @@ class FeaturePipeline:
 
         if not self.feature_columns:
             raise RuntimeError("FeaturePipeline must be fit before calling transform.")
+
+        new_rows = len(df)
+        new_index = df.index
+        history_enabled = self.stateful
+        augmented_df = df
+        if history_enabled:
+            history = self._history_buffer
+            if history is not None and not history.empty:
+                augmented_df = pd.concat([history, df], axis=0, copy=False)
+            else:
+                augmented_df = df.copy()
+        df = augmented_df
 
         features = df.reindex(columns=self.feature_columns, fill_value=np.nan).copy()
 
@@ -266,7 +313,21 @@ class FeaturePipeline:
         features = self._add_enhanced_features(features, df)
         features = self._add_lagged_interactions(features, df)
 
+        # 特征选择
+        if self.enable_feature_selection and self.selected_features:
+            # 只保留选定的特征
+            features = features[self.selected_features]
+
         features = features.fillna(0)
+
+        if history_enabled:
+            if new_rows:
+                features = features.iloc[-new_rows:, :].copy()
+                features.index = new_index
+            else:
+                features = features.iloc[0:0].copy()
+            self._history_buffer = df.iloc[-self.stateful_max_history :, :].copy()
+
         return features
 
     def _add_enhanced_features(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
@@ -323,6 +384,18 @@ class FeaturePipeline:
             rsi = 100 - (100 / (1 + rs))
             tech_indicators.append(rsi.fillna(50).astype(self.dtype).to_frame('rsi_14'))
         
+        # MACD (Moving Average Convergence Divergence)
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            exp1 = price.ewm(span=12).mean()
+            exp2 = price.ewm(span=26).mean()
+            macd = exp1 - exp2
+            signal = macd.ewm(span=9).mean()
+            histogram = macd - signal
+            tech_indicators.append(macd.fillna(0).astype(self.dtype).to_frame('macd_line'))
+            tech_indicators.append(signal.fillna(0).astype(self.dtype).to_frame('macd_signal'))
+            tech_indicators.append(histogram.fillna(0).astype(self.dtype).to_frame('macd_histogram'))
+        
         # 移动平均交叉
         if 'P1' in original_df.columns:
             price = original_df['P1']
@@ -339,7 +412,9 @@ class FeaturePipeline:
             bb_upper = ma_20 + (2 * std_20)
             bb_lower = ma_20 - (2 * std_20)
             bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+            bb_width = (bb_upper - bb_lower) / ma_20
             tech_indicators.append(bb_position.fillna(0.5).astype(self.dtype).to_frame('bollinger_position'))
+            tech_indicators.append(bb_width.fillna(0.1).astype(self.dtype).to_frame('bollinger_width'))
         
         return tech_indicators
 
@@ -354,6 +429,8 @@ class FeaturePipeline:
             ('P1', 'V1', 'price_vol_interaction'),
             ('E1', 'E2', 'economic_dual'),
             ('MOM1', 'M1', 'momentum_market_interaction'),
+            ('V1', 'P1', 'vol_price_interaction'),
+            ('MOM1', 'V1', 'momentum_vol_interaction'),
         ]
         
         for col1, col2, name in important_crosses:
@@ -366,6 +443,8 @@ class FeaturePipeline:
             ('P1', 'P2', 'price_ratio'),
             ('V1', 'V2', 'vol_ratio'),
             ('M1', 'M2', 'market_ratio'),
+            ('E1', 'E2', 'economic_ratio'),
+            ('MOM1', 'MOM2', 'momentum_ratio'),
         ]
         
         for col1, col2, name in ratio_features:
@@ -374,12 +453,18 @@ class FeaturePipeline:
                 ratio = ratio.replace([np.inf, -np.inf], 0).fillna(1)
                 cross_features.append(ratio.astype(self.dtype).to_frame(name))
         
+        # 统计特征交叉
+        if 'M1' in features.columns and 'V1' in features.columns:
+            # 市场特征与波动率的标准化交叉
+            norm_cross = (features['M1'] * features['V1']) / (features['V1'].std() + 1e-8)
+            cross_features.append(norm_cross.fillna(0).astype(self.dtype).to_frame('norm_market_vol_cross'))
+        
         return cross_features
 
     def _add_lagged_interactions(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
         """添加滞后特征的高级交互"""
         
-        lagged_cols = [col for col in original_df.columns if col.startswith('lagged_')]
+        lagged_cols = sorted(col for col in original_df.columns if col.startswith('lagged_'))
         
         if not lagged_cols:
             return features
@@ -409,6 +494,38 @@ class FeaturePipeline:
 
     def fit_transform(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> pd.DataFrame:
         return self.fit(df, feature_cols).transform(df)
+
+    def set_feature_importance(self, importance_dict: Dict[str, float]) -> None:
+        """设置特征重要性用于特征选择"""
+        self.feature_importance = importance_dict
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> "FeaturePipeline":
+        """Construct a pipeline instance from a serialized config mapping."""
+
+        allowed = {field: config[field] for field in cls._CONFIG_FIELDS if field in config}
+        return cls(**allowed)
+
+    @classmethod
+    def default_config(cls) -> Dict[str, Any]:
+        """Return the canonical default pipeline configuration."""
+
+        return {
+            "clip_quantile": 0.01,
+            "missing_indicator_threshold": 0.05,
+            "standardize": False,
+            "dtype": "float32",
+            "extra_group_stats": True,
+            "enable_feature_selection": False,
+            "max_features": 300,
+            "stateful": False,
+            "stateful_max_history": 256,
+        }
+
+    def to_config(self) -> Dict[str, Any]:
+        """Export the current pipeline hyper-parameters to a plain dict."""
+
+        return {field: getattr(self, field) for field in self._CONFIG_FIELDS}
 
     @property
     def output_columns(self) -> List[str]:
@@ -444,6 +561,46 @@ def get_feature_groups() -> dict:
 get_feature_columns = data_get_feature_columns
 
 
+def _normalize_for_hash(value: Any) -> Any:
+    """Convert numpy/scalar types into JSON-serializable primitives."""
+
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_normalize_for_hash(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize_for_hash(v) for k, v in value.items()}
+    return value
+
+
+def build_feature_pipeline(**overrides: Any) -> FeaturePipeline:
+    """Create a FeaturePipeline with shared defaults plus optional overrides."""
+
+    config = FeaturePipeline.default_config()
+    for key, value in overrides.items():
+        if value is None or key not in FeaturePipeline._CONFIG_FIELDS:
+            continue
+        config[key] = value
+    return FeaturePipeline.from_config(config)
+
+
+def pipeline_config_hash(
+    config: Mapping[str, Any],
+    *,
+    augment_flag: bool | None = None,
+    extra: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Return a deterministic hash describing the pipeline + data knobs."""
+
+    payload: Dict[str, Any] = {"pipeline": _normalize_for_hash(dict(config))}
+    if augment_flag is not None:
+        payload["augment_data"] = bool(augment_flag)
+    if extra:
+        payload["extra"] = _normalize_for_hash(dict(extra))
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "engineer_features",
     "handle_missing_values", 
@@ -451,4 +608,6 @@ __all__ = [
     "FeaturePipeline",
     "get_feature_groups",
     "get_feature_columns",
+    "build_feature_pipeline",
+    "pipeline_config_hash",
 ]

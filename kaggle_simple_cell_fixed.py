@@ -5,6 +5,26 @@ import os
 import sys
 import json
 import subprocess
+import warnings
+
+# 配置警告处理 - 在所有其他导入之前
+def configure_warnings():
+    """配置警告处理以避免pandas比较警告"""
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    warnings.filterwarnings('ignore', category=FutureWarning)
+    warnings.filterwarnings('ignore', 
+                          message='.*invalid value encountered in greater.*',
+                          category=RuntimeWarning)
+    warnings.filterwarnings('ignore',
+                          message='.*invalid value encountered in less.*', 
+                          category=RuntimeWarning)
+    warnings.filterwarnings('ignore',
+                          message='.*frozen modules.*',
+                          category=UserWarning)
+    print("✅ 警告处理已配置")
+
+# 立即配置警告处理
+configure_warnings()
 
 TRUE_STRINGS = {"1", "true", "yes", "on"}
 VERBOSE = os.getenv("VERBOSE", "0").lower() in TRUE_STRINGS

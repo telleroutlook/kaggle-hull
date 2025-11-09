@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import numpy as np
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -24,6 +25,7 @@ LAG_FEATURE_SOURCES = {
     "lagged_risk_free_rate": "risk_free_rate",
     "lagged_market_forward_excess_returns": "market_forward_excess_returns",
 }
+TRUE_STRINGS = {"1", "true", "yes", "on"}
 
 
 def _get_env_usecols() -> Optional[List[str]]:
@@ -60,6 +62,23 @@ def _get_chunk_size() -> int:
 def _should_use_polars() -> bool:
     flag = os.getenv("HULL_USE_POLARS", "0").lower()
     return flag in {"1", "true", "yes"}
+
+
+def _env_flag(var_name: str, default: bool = False) -> bool:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    return raw.lower() in TRUE_STRINGS
+
+
+def _env_float(var_name: str, default: float) -> float:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 @lru_cache(maxsize=4)
@@ -179,6 +198,8 @@ def load_train_data(
     data_paths: Optional[DataPaths] = None,
     *,
     columns: Optional[Iterable[str]] = None,
+    augment_data: bool = False,
+    augmentation_factor: float = 0.1,
 ) -> pd.DataFrame:
     """加载训练数据，自动应用dtype/usecols优化"""
 
@@ -188,8 +209,73 @@ def load_train_data(
     print(f"加载训练数据: {paths.train_data}")
     df = _read_csv_fast(paths.train_data, usecols=usecols)
     df = ensure_lagged_feature_parity(df)
+    
+    # 数据增强
+    if augment_data:
+        df = _augment_data(df, augmentation_factor)
+    
     _log_df_stats("训练", df)
     return df
+
+
+def load_training_frame(
+    data_paths: Optional[DataPaths] = None,
+    *,
+    columns: Optional[Iterable[str]] = None,
+    augment: Optional[bool] = None,
+    augmentation_factor: Optional[float] = None,
+    return_metadata: bool = False,
+) -> pd.DataFrame | Tuple[pd.DataFrame, Dict[str, float | bool]]:
+    """Shared helper for training/inference to load and annotate the train frame."""
+
+    resolved_augment = bool(augment) if augment is not None else _env_flag("HULL_AUGMENT_DATA", False)
+    resolved_factor = augmentation_factor
+    if resolved_factor is None:
+        resolved_factor = _env_float("HULL_AUGMENTATION_FACTOR", 0.05)
+    resolved_factor = max(0.0, resolved_factor)
+    df = load_train_data(
+        data_paths,
+        columns=columns,
+        augment_data=resolved_augment,
+        augmentation_factor=resolved_factor,
+    )
+    metadata: Dict[str, float | bool] = {
+        "augment_data": resolved_augment,
+        "augmentation_factor": resolved_factor if resolved_augment else 0.0,
+    }
+    df.attrs["hull_training_metadata"] = metadata
+    if return_metadata:
+        return df, metadata
+    return df
+
+
+def _augment_data(df: pd.DataFrame, factor: float = 0.1) -> pd.DataFrame:
+    """数据增强：添加少量噪声以提高模型泛化能力"""
+    
+    if factor <= 0:
+        return df
+    
+    df_aug = df.copy()
+    
+    # 获取数值列
+    numeric_cols = df.select_dtypes(include=[float, int]).columns.tolist()
+    
+    # 移除不需要增强的列
+    exclude_cols = ['date_id', 'forward_returns', 'risk_free_rate', 'market_forward_excess_returns']
+    feature_cols = [col for col in numeric_cols if col not in exclude_cols]
+    
+    for col in feature_cols:
+        if col in df_aug.columns:
+            # 添加基于列标准差的小幅噪声
+            col_std = df_aug[col].std()
+            if pd.notna(col_std) and col_std > 0:
+                noise = pd.Series(
+                    np.random.normal(0, col_std * factor, size=len(df_aug)),
+                    index=df_aug.index
+                )
+                df_aug[col] = df_aug[col] + noise
+    
+    return df_aug
 
 
 def load_test_data(
@@ -247,6 +333,7 @@ def validate_data(df: pd.DataFrame, data_type: str = "train") -> bool:
 
 __all__ = [
     "load_train_data",
+    "load_training_frame",
     "load_test_data", 
     "get_feature_columns",
     "get_target_columns",

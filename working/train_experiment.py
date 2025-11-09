@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import copy
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, Any
 
 import numpy as np
@@ -20,9 +19,9 @@ from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 
 from lib.artifacts import update_oof_artifact
-from lib.data import get_feature_columns
+from lib.data import load_training_frame
 from lib.evaluation import backtest_strategy
-from lib.features import FeaturePipeline
+from lib.features import build_feature_pipeline, pipeline_config_hash
 from lib.env import detect_run_environment, get_log_paths
 from lib.model_registry import get_model_params
 from lib.models import HullModel
@@ -32,9 +31,6 @@ from lib.strategy import (
     apply_volatility_overlay,
 )
 from lib.utils import save_metrics
-
-DATA_ROOT = Path(__file__).resolve().parents[1] / "input" / "hull-tactical-market-prediction"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline trainer for Hull Tactical models.")
@@ -48,6 +44,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clip-quantile", type=float, default=0.01)
     parser.add_argument("--missing-indicator-threshold", type=float, default=0.05)
     parser.add_argument("--no-standardize", action="store_true", help="Disable z-score scaling in FeaturePipeline.")
+    parser.add_argument(
+        "--augment-data",
+        action="store_true",
+        help="Enable stochastic noise augmentation when loading training data (defaults to env HULL_AUGMENT_DATA).",
+    )
+    parser.add_argument(
+        "--augmentation-factor",
+        type=float,
+        default=0.05,
+        help="Std multiplier applied when augmentation is enabled.",
+    )
     parser.add_argument("--model-param", action="append", default=[], help="Override model params key=value.")
     parser.add_argument("--scale-cv-splits", type=int, default=4, help="Rolling folds for scale tuning.")
     parser.add_argument("--overlay-lookback", type=int, default=63, help="Lookback for volatility overlay.")
@@ -122,18 +129,30 @@ def main() -> None:
     args = parse_args()
     if args.std_guard_fallback_model == "none":  # type: ignore[attr-defined]
         args.std_guard_fallback_model = None  # type: ignore[assignment]
-    train_path = DATA_ROOT / "train.csv"
-    df = pd.read_csv(train_path)
+
+    df, training_meta = load_training_frame(
+        columns=None,
+        augment=args.augment_data,
+        augmentation_factor=args.augmentation_factor,
+        return_metadata=True,
+    )
     if args.sample_frac < 1.0:
         df = df.sample(frac=args.sample_frac, random_state=42).sort_values("date_id")
 
     env = detect_run_environment()
     log_paths = get_log_paths(env)
 
-    pipeline = FeaturePipeline(
+    pipeline = build_feature_pipeline(
         clip_quantile=args.clip_quantile,
         missing_indicator_threshold=args.missing_indicator_threshold,
         standardize=not args.no_standardize,
+        stateful=True,
+    )
+    pipeline_config = pipeline.to_config()
+    pipeline_hash = pipeline_config_hash(
+        pipeline_config,
+        augment_flag=training_meta["augment_data"],
+        extra={"augmentation_factor": training_meta["augmentation_factor"]},
     )
     features = pipeline.fit_transform(df)
     target = df["forward_returns"].reset_index(drop=True)
@@ -233,7 +252,7 @@ def main() -> None:
             if final_std < adaptive_threshold * 0.5:
                 try:
                     # 优先尝试ensemble模型
-                    if 'ensemble' not in tried_models and 'ensemble' in MODEL_PRESETS:
+                    if 'ensemble' not in tried_models:
                         try:
                             ensemble_params = {
                                 'weights': {'lightgbm': 1.0, 'xgboost': 1.0, 'catboost': 1.0},
@@ -398,6 +417,10 @@ def main() -> None:
                 "min_periods": args.overlay_min_periods,
                 "volatility_cap": args.overlay_vol_cap,
             },
+            "pipeline_config": pipeline_config,
+            "pipeline_config_hash": pipeline_hash,
+            "augment_data": training_meta["augment_data"],
+            "augmentation_factor": training_meta["augmentation_factor"],
         }
         update_oof_artifact(log_paths.oof_metrics, args.model_type, payload)
         save_metrics(
@@ -414,6 +437,7 @@ def main() -> None:
                     sum(1 for m in fold_metrics if m.get("std_guard_triggered"))
                 ),
                 "std_guard_threshold": args.std_guard_threshold,
+                "pipeline_config_hash": pipeline_hash,
             },
             log_paths.metrics_csv,
         )

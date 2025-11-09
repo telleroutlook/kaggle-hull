@@ -15,9 +15,59 @@ DEFAULT_SCALES = np.linspace(5.0, 40.0, 15)
 
 def scale_to_allocation(predictions: np.ndarray, *, scale: float, midpoint: float = 1.0) -> np.ndarray:
     """Map unconstrained predictions to [0, 2] leverage weights."""
-
+    
+    # Convert to numpy array and handle NaN/inf values
+    predictions = np.asarray(predictions, dtype=float)
+    predictions = np.where(np.isfinite(predictions), predictions, 0.0)
+    
     allocations = midpoint + predictions * scale
-    return np.clip(allocations, 0.0, 2.0)
+    # Clip and ensure no NaN values remain
+    result = np.clip(allocations, 0.0, 2.0)
+    return np.where(np.isfinite(result), result, 1.0)  # Replace any remaining NaN with midpoint
+
+
+def dynamic_scale_to_allocation(
+    predictions: np.ndarray, 
+    market_returns: np.ndarray, 
+    *,
+    base_scale: float = 20.0,
+    midpoint: float = 1.0,
+    volatility_regime_threshold: float = 0.015,
+    low_vol_scale_multiplier: float = 1.2,
+    high_vol_scale_multiplier: float = 0.8,
+    lookback_period: int = 20
+) -> np.ndarray:
+    """根据市场波动率动态调整杠杆的分配策略"""
+    
+    predictions = np.asarray(predictions, dtype=float)
+    market_returns = np.asarray(market_returns, dtype=float)
+    
+    # 处理NaN/inf值
+    predictions = np.where(np.isfinite(predictions), predictions, 0.0)
+    market_returns = np.where(np.isfinite(market_returns), market_returns, 0.0)
+    
+    # 计算滚动波动率
+    rolling_volatility = np.zeros_like(market_returns)
+    for i in range(len(market_returns)):
+        start_idx = max(0, i - lookback_period + 1)
+        window_returns = market_returns[start_idx:i+1]
+        rolling_volatility[i] = np.std(window_returns)
+    
+    # 根据波动率调整杠杆倍数
+    scale_multipliers = np.ones_like(rolling_volatility)
+    low_vol_mask = rolling_volatility < volatility_regime_threshold
+    high_vol_mask = rolling_volatility >= volatility_regime_threshold
+    
+    scale_multipliers[low_vol_mask] = low_vol_scale_multiplier
+    scale_multipliers[high_vol_mask] = high_vol_scale_multiplier
+    
+    # 应用动态杠杆
+    dynamic_scales = base_scale * scale_multipliers
+    allocations = midpoint + predictions * dynamic_scales
+    
+    # 限制在[0, 2]范围内
+    result = np.clip(allocations, 0.0, 2.0)
+    return np.where(np.isfinite(result), result, 1.0)
 
 
 def tune_allocation_scale(
@@ -115,6 +165,9 @@ class VolatilityOverlay:
         clip_bounds: tuple[float, float] = (0.0, 2.0),
         reference_is_lagged: bool = False,
         target_volatility_quantile: float | None = None,
+        adaptive_volatility_cap: bool = False,
+        volatility_cap_min: float = 1.0,
+        volatility_cap_max: float = 1.5,
     ) -> None:
         self.lookback = max(2, lookback)
         self.min_periods = min_periods or max(10, self.lookback // 3)
@@ -122,6 +175,9 @@ class VolatilityOverlay:
         self.clip_bounds = clip_bounds
         self.reference_is_lagged = reference_is_lagged
         self.target_volatility_quantile = target_volatility_quantile
+        self.adaptive_volatility_cap = adaptive_volatility_cap
+        self.volatility_cap_min = volatility_cap_min
+        self.volatility_cap_max = volatility_cap_max
 
         self.market_returns: Deque[float] = deque()
         self.strategy_returns: Deque[float] = deque()
@@ -163,7 +219,31 @@ class VolatilityOverlay:
         if len(market_series) == 0 or not np.any(np.isfinite(market_series)):
             return 1e-6
             
-        base_target = float(np.std(market_series)) * self.volatility_cap
+        # 如果启用了自适应波动率上限，则根据当前市场波动率调整
+        current_volatility_cap = self.volatility_cap
+        if self.adaptive_volatility_cap and len(market_series) >= self.min_periods:
+            # 使用当前市场波动率作为参考来调整波动率上限
+            current_market_vol = float(np.std(market_series))
+            # 如果市场波动率低于历史中位数，适当降低波动率上限以获得更高收益
+            # 如果市场波动率高于历史中位数，适当增加波动率上限以避免过度保守
+            historical_vols = []
+            for i in range(self.min_periods, len(market_series)):
+                historical_vol = float(np.std(market_series[i - self.min_periods:i]))
+                historical_vols.append(historical_vol)
+            
+            if historical_vols:
+                median_historical_vol = float(np.median(historical_vols))
+                # 调整波动率上限：低波动率环境下提高，高波动率环境下降低
+                vol_ratio = current_market_vol / (median_historical_vol + 1e-8)
+                current_volatility_cap = float(
+                    np.clip(
+                        self.volatility_cap * (1.5 - vol_ratio),  # 反向调整
+                        self.volatility_cap_min,
+                        self.volatility_cap_max
+                    )
+                )
+        
+        base_target = float(np.std(market_series)) * current_volatility_cap
         if (
             self.target_volatility_quantile is not None
             and 0 < self.target_volatility_quantile < 1

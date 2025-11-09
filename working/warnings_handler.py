@@ -29,11 +29,34 @@ def setup_warnings_handling():
                           message='.*invalid value encountered in less.*', 
                           category=RuntimeWarning)
     
+    # 忽略调试器冻结模块警告
+    warnings.filterwarnings('ignore',
+                          message='.*frozen modules.*',
+                          category=UserWarning)
+    
     # 设置pandas选项以更好地处理NaN
     pd.set_option('mode.chained_assignment', None)  # 忽略链式赋值警告
     pd.set_option('display.max_columns', None)      # 避免列显示警告
     
     print("✅ 警告处理已配置")
+
+
+def setup_warnings_early():
+    """在早期阶段设置警告处理（在pandas导入之前）"""
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    warnings.filterwarnings('ignore', category=FutureWarning)
+    warnings.filterwarnings('ignore', category=UserWarning)
+    
+    # 特别处理pandas比较警告
+    warnings.filterwarnings('ignore', 
+                          message='.*invalid value encountered in greater.*',
+                          category=RuntimeWarning)
+    warnings.filterwarnings('ignore',
+                          message='.*invalid value encountered in less.*', 
+                          category=RuntimeWarning)
+    warnings.filterwarnings('ignore',
+                          message='.*frozen modules.*',
+                          category=UserWarning)
 
 
 def suppress_specific_warnings():

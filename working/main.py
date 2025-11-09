@@ -199,7 +199,7 @@ def main():
         # 特征工程
         tracker.start_task("feature_engineering")
         tracker.record_memory_usage()
-        pipeline = FeaturePipeline()
+        pipeline = FeaturePipeline(stateful=True)
         train_features = pipeline.fit_transform(train_data)
         test_features = pipeline.transform(test_data)
         
