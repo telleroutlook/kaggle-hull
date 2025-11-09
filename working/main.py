@@ -9,6 +9,7 @@ import sys
 import os
 import pandas as pd
 from pathlib import Path
+from typing import Optional
 
 # 添加lib目录到路径
 working_dir = os.path.dirname(__file__)
@@ -33,8 +34,6 @@ from lib.strategy import (
     tune_allocation_scale,
 )
 from lib.utils import PerformanceTracker, save_logs, save_metrics, validate_submission
-
-TRUE_STRINGS = {"1", "true", "yes", "on"}
 
 # 尝试导入配置模块
 try:
@@ -62,20 +61,11 @@ def parse_args(argv=None):
         default=None,
         help="选择模型类型 (默认：使用HULL_MODEL_TYPE或lightgbm)"
     )
-    reuse_default = os.getenv("HULL_REUSE_OOF_SCALE", "1").lower() in TRUE_STRINGS
     parser.add_argument(
-        "--reuse-oof-scale",
-        dest="reuse_oof_scale",
+        "--allow-missing-oof",
         action="store_true",
-        help="复用 train_experiment.py 导出的 OOF 杠杆/指标",
+        help="允许在缺失 OOF artefact 时退回在线校准（默认强制需要 artefact）",
     )
-    parser.add_argument(
-        "--no-reuse-oof-scale",
-        dest="reuse_oof_scale",
-        action="store_false",
-        help="禁用 OOF 杠杆复用",
-    )
-    parser.set_defaults(reuse_oof_scale=reuse_default)
     
     parser.add_argument(
         "--data-path",
@@ -236,33 +226,47 @@ def main():
                 f"Sharpe={oof_entry.get('oof_metrics', {}).get('sharpe', float('nan')):.4f}, "
                 f"Scale={oof_entry.get('preferred_scale')} (timestamp={oof_entry.get('timestamp')})"
             )
+        elif not args.allow_missing_oof:
+            raise RuntimeError(
+                "OOF artefact not found. 请先运行 train_experiment.py 生成 OOF 配置，或使用 --allow-missing-oof 明确允许回退。"
+            )
         target = train_data["forward_returns"].fillna(train_data["forward_returns"].median())
         model.fit(train_features, target)
 
-        train_preds = model.predict(train_features, clip=False)
-        scale_result = optimize_scale_with_rolling_cv(train_preds, target.values)
-        allocation_scale = scale_result.get("scale", 20.0)
-        if allocation_scale is None:
-            tuning = tune_allocation_scale(train_preds, target.values)
-            allocation_scale = tuning.get("scale", 20.0)
-            scale_result = {
-                "cv_sharpe": tuning.get("strategy_sharpe", 0.0),
-                "strategy_sharpe": tuning.get("strategy_sharpe", 0.0),
-            }
-        if oof_entry:
-            artefact_scale = oof_entry.get("preferred_scale")
-        else:
-            artefact_scale = None
-        if args.reuse_oof_scale and artefact_scale is not None:
-            allocation_scale = float(artefact_scale)
+        allocation_scale: Optional[float] = None
+        scale_result: dict[str, float] = {}
+        overlay_config = (oof_entry or {}).get("overlay_config") if oof_entry else None
+
+        if oof_entry and oof_entry.get("preferred_scale") is not None:
+            allocation_scale = float(oof_entry.get("preferred_scale"))
             print(
-                f"♻️ Reusing allocation scale {allocation_scale:.2f} from OOF artefact "
+                f"♻️ Using allocation scale {allocation_scale:.2f} from OOF artefact "
                 f"recorded at {oof_entry.get('timestamp')}"
             )
-        if args.verbose:
+        elif args.allow_missing_oof:
+            train_preds = model.predict(train_features, clip=False)
+            scale_result = optimize_scale_with_rolling_cv(train_preds, target.values)
+            allocation_scale = scale_result.get("scale", 20.0)
+            if allocation_scale is None:
+                tuning = tune_allocation_scale(train_preds, target.values)
+                allocation_scale = tuning.get("scale", 20.0)
+                scale_result = {
+                    "cv_sharpe": tuning.get("strategy_sharpe", 0.0),
+                    "strategy_sharpe": tuning.get("strategy_sharpe", 0.0),
+                }
             print(
-                f"🎯 Allocation scale={allocation_scale:.2f}, "
-                f"CVSharpe={scale_result.get('cv_sharpe', 0):.4f}"
+                f"⚠️ Falling back to on-the-fly scale calibration (allocation scale={allocation_scale:.2f})."
+            )
+        else:
+            raise RuntimeError(
+                "OOF artefact missing preferred_scale. 请重新运行 train_experiment.py 以记录最新配置。"
+            )
+
+        if args.verbose and allocation_scale is not None:
+            source = "artefact" if oof_entry else "local_cv"
+            print(
+                f"🎯 Allocation scale={allocation_scale:.2f} (source={source}, "
+                f"CVSharpe={scale_result.get('cv_sharpe', 0):.4f})"
             )
 
         raw_test_preds = model.predict(test_features, clip=False)
@@ -281,18 +285,23 @@ def main():
                 overlay_source = test_data["lagged_market_forward_excess_returns"].to_numpy()
 
             if overlay_source is not None:
+                overlay_params = overlay_config or {}
                 overlay = VolatilityOverlay(
-                    lookback=args.risk_overlay_lookback,
-                    min_periods=args.risk_overlay_min_periods,
+                    lookback=overlay_params.get("lookback", args.risk_overlay_lookback),
+                    min_periods=overlay_params.get("min_periods", args.risk_overlay_min_periods),
+                    volatility_cap=overlay_params.get("volatility_cap", 1.2),
                     reference_is_lagged=True,
-                    target_volatility_quantile=args.risk_overlay_target_quantile,
+                    target_volatility_quantile=overlay_params.get(
+                        "target_volatility_quantile", args.risk_overlay_target_quantile
+                    ),
                 )
                 overlay_result = overlay.transform(predictions, overlay_source)
                 predictions = overlay_result["allocations"]
                 if args.verbose:
                     print(
                         f"🛡️ Risk overlay applied ({overlay.breaches} caps), "
-                        f"mean scale={overlay_result['scaling_factors'].mean():.3f}"
+                        f"mean scale={overlay_result['scaling_factors'].mean():.3f}, "
+                        f"cfg={overlay_params or {'lookback': args.risk_overlay_lookback}}"
                     )
 
         # 创建提交文件
@@ -320,8 +329,13 @@ def main():
             'max_prediction': float(predictions.max()),
             'mean_prediction': float(predictions.mean()),
             'std_prediction': float(predictions.std()),
+            'std_raw_prediction': float(raw_test_preds.std()),
             'allocation_scale': allocation_scale,
-            'train_sharpe': float(scale_result.get('cv_sharpe', 0.0)),
+            'train_sharpe': float(
+                scale_result.get('cv_sharpe', oof_entry.get('oof_metrics', {}).get('sharpe', 0.0))
+                if oof_entry
+                else scale_result.get('cv_sharpe', 0.0)
+            ),
             'model_type': model_type,
             'environment': env
         }

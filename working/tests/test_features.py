@@ -19,11 +19,13 @@ try:
         get_feature_groups,
         FeaturePipeline,
     )
+    from lib.data import ensure_lagged_feature_parity
 except ImportError:
     # 如果lib.features导入失败，尝试直接导入
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
     from features import engineer_features, handle_missing_values, add_statistical_features, get_feature_groups, FeaturePipeline
+    from data import ensure_lagged_feature_parity
 
 
 def test_handle_missing_values():
@@ -145,6 +147,38 @@ def test_feature_pipeline_handles_small_samples_without_quantile_clipping():
 
     assert transformed.shape[0] == len(df)
     assert not transformed.isnull().any().any()
+
+
+def test_feature_pipeline_preserves_schema_with_lagged_features():
+    base_train = pd.DataFrame(
+        {
+            'date_id': [1, 2, 3, 4],
+            'feature_a': [0.1, 0.2, 0.3, 0.4],
+            'feature_b': [10, 11, 12, 13],
+            'forward_returns': [0.01, -0.02, 0.03, -0.01],
+            'risk_free_rate': [0.001, 0.001, 0.002, 0.002],
+            'market_forward_excess_returns': [0.02, 0.01, 0.03, 0.00],
+        }
+    )
+    train_df = ensure_lagged_feature_parity(base_train)
+
+    pipeline = FeaturePipeline()
+    train_features = pipeline.fit_transform(train_df)
+
+    test_df = pd.DataFrame(
+        {
+            'date_id': [5, 6],
+            'feature_a': [0.5, 0.6],
+            'feature_b': [14, 15],
+            'lagged_forward_returns': [0.03, -0.01],
+            'lagged_market_forward_excess_returns': [0.02, 0.01],
+            'lagged_risk_free_rate': [0.001, 0.001],
+            'is_scored': [True, True],
+        }
+    )
+
+    transformed_test = pipeline.transform(test_df)
+    assert list(train_features.columns) == list(transformed_test.columns)
 
 
 if __name__ == "__main__":

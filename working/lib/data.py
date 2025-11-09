@@ -19,6 +19,11 @@ TRAIN_REQUIRED_COLS = [
 ]
 TEST_REQUIRED_COLS = ["date_id", "is_scored"]
 FLOAT_PREFIXES = ("M", "E", "I", "P", "V", "S", "MOM", "D")
+LAG_FEATURE_SOURCES = {
+    "lagged_forward_returns": "forward_returns",
+    "lagged_risk_free_rate": "risk_free_rate",
+    "lagged_market_forward_excess_returns": "market_forward_excess_returns",
+}
 
 
 def _get_env_usecols() -> Optional[List[str]]:
@@ -138,6 +143,38 @@ def _ensure_data_paths(data_paths: Optional[DataPaths]) -> DataPaths:
     return get_data_paths(env)
 
 
+def ensure_lagged_feature_parity(
+    df: pd.DataFrame,
+    *,
+    sort_column: str = "date_id",
+) -> pd.DataFrame:
+    """Ensure train data carries the lagged columns present in the test feed."""
+
+    if df.empty:
+        for new_col in LAG_FEATURE_SOURCES:
+            if new_col not in df.columns:
+                df[new_col] = pd.Series(dtype="float32")
+        return df
+
+    result = df.copy()
+    if sort_column in result.columns:
+        order = result[sort_column].sort_values(kind="mergesort").index
+    else:
+        order = result.index
+
+    for new_col, source_col in LAG_FEATURE_SOURCES.items():
+        if new_col in result.columns or source_col not in result.columns:
+            continue
+        lagged_series = (
+            pd.to_numeric(result.loc[order, source_col], errors="coerce")
+            .shift(1)
+            .astype("float32")
+        )
+        result.loc[order, new_col] = lagged_series.values
+
+    return result
+
+
 def load_train_data(
     data_paths: Optional[DataPaths] = None,
     *,
@@ -150,6 +187,7 @@ def load_train_data(
     usecols = _resolve_usecols(TRAIN_REQUIRED_COLS, requested_cols)
     print(f"加载训练数据: {paths.train_data}")
     df = _read_csv_fast(paths.train_data, usecols=usecols)
+    df = ensure_lagged_feature_parity(df)
     _log_df_stats("训练", df)
     return df
 
@@ -175,9 +213,7 @@ def get_feature_columns(df: pd.DataFrame) -> list:
     
     # 排除目标变量和其他非特征列
     exclude_cols = ['date_id', 'forward_returns', 'risk_free_rate', 
-                   'market_forward_excess_returns', 'is_scored',
-                   'lagged_forward_returns', 'lagged_risk_free_rate', 
-                   'lagged_market_forward_excess_returns']
+                   'market_forward_excess_returns', 'is_scored']
     
     feature_cols = [col for col in df.columns if col not in exclude_cols]
     return feature_cols
@@ -215,4 +251,5 @@ __all__ = [
     "get_feature_columns",
     "get_target_columns",
     "validate_data",
+    "ensure_lagged_feature_parity",
 ]

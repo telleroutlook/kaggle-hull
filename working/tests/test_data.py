@@ -13,12 +13,17 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 try:
-    from lib.data import load_test_data, get_feature_columns, validate_data
+    from lib.data import (
+        load_test_data,
+        get_feature_columns,
+        validate_data,
+        ensure_lagged_feature_parity,
+    )
 except ImportError:
     # 如果lib.data导入失败，尝试直接导入
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
-    from data import load_test_data, get_feature_columns, validate_data
+    from data import load_test_data, get_feature_columns, validate_data, ensure_lagged_feature_parity
 
 
 def test_get_feature_columns():
@@ -35,13 +40,16 @@ def test_get_feature_columns():
         'is_scored': [True, True, False]
     })
     
-    feature_cols = get_feature_columns(test_data)
+    enriched = ensure_lagged_feature_parity(test_data)
+    feature_cols = get_feature_columns(enriched)
     
     # 验证返回的特征列
     assert 'M1' in feature_cols
     assert 'M2' in feature_cols
     assert 'forward_returns' not in feature_cols  # 目标变量应该被排除
     assert 'date_id' not in feature_cols  # ID列应该被排除
+    assert 'lagged_forward_returns' in feature_cols
+    assert 'lagged_market_forward_excess_returns' in feature_cols
     
 
 def test_validate_data():
@@ -79,6 +87,30 @@ def test_data_loading_integration():
     # 这个测试需要实际的数据文件
     # 在测试环境中，我们跳过实际加载
     pass
+
+
+def test_ensure_lagged_feature_parity_aligns_with_date_order():
+    df = pd.DataFrame(
+        {
+            'date_id': [2, 1, 3],
+            'forward_returns': [0.02, -0.01, 0.05],
+            'risk_free_rate': [0.001, 0.002, 0.003],
+            'market_forward_excess_returns': [0.01, 0.015, 0.005],
+        }
+    )
+
+    enriched = ensure_lagged_feature_parity(df)
+
+    # 滞后列应该存在
+    assert 'lagged_forward_returns' in enriched.columns
+    assert 'lagged_market_forward_excess_returns' in enriched.columns
+
+    # date_id=1（原index=1）没有前一天，应该为NaN
+    assert np.isnan(enriched.loc[1, 'lagged_forward_returns'])
+    # date_id=2（原index=0）的滞后值应等于date_id=1的forward_returns
+    assert enriched.loc[0, 'lagged_forward_returns'] == pytest.approx(df.loc[1, 'forward_returns'])
+    # date_id=3（原index=2）的滞后值应等于date_id=2的forward_returns
+    assert enriched.loc[2, 'lagged_forward_returns'] == pytest.approx(df.loc[0, 'forward_returns'])
 
 
 if __name__ == "__main__":

@@ -260,6 +260,17 @@ class HullModel:
                     fit_kwargs.setdefault("eval_set", [(X_val, y_val)])
                 fit_kwargs.setdefault("early_stopping_rounds", 200)
 
+        if self.model_type == "lightgbm" and "early_stopping_rounds" in fit_kwargs:
+            early_rounds = fit_kwargs.pop("early_stopping_rounds")
+            callbacks = list(fit_kwargs.get("callbacks") or [])
+            try:
+                from lightgbm import early_stopping as lgb_early_stopping
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise ImportError("LightGBM 未安装") from exc
+
+            callbacks.append(lgb_early_stopping(stopping_rounds=early_rounds, verbose=False))
+            fit_kwargs["callbacks"] = callbacks
+
         self.model.fit(fit_X, fit_y, **fit_kwargs)
         
     def predict(self, X: pd.DataFrame, *, clip: bool = True) -> np.ndarray:

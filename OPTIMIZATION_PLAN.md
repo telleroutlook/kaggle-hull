@@ -59,3 +59,19 @@
   - 行动：新增针对 `FeaturePipeline` 边界、`VolatilityOverlay` lag 模式、`inference_server.predict` 空批次的 pytest，并连接 CI。  
   - 状态：已完成
 
+## 5. 分数回归排查（2025-11）
+
+- [ ] **预测分布塌缩导致Sharpe为零**  
+  - 证据：`working/hull_metrics.csv` 最新几次运行的 `std_prediction` 从基线的 ~0.60 降到 0.06，`working/submission.csv` 也只有 0.91~1.12 的极窄区间。  
+  - 行动：在 `train_experiment.py` 中记录/绘制 raw preds 与最终 allocation 的标准差，并在主流程加入阈值守护（例如 `std_prediction < 0.15` 时强制回退到更高的 leverage/换模型）以恢复有效波动。  
+  - 状态：待处理
+
+- [ ] **训练缺失 lag 特征导致线上线下特征空间不一致**  
+  - 证据：`input/hull-tactical-market-prediction/test.csv` 含有 `lagged_forward_returns` 等列，但 `train.csv` 没有，现有 `FeaturePipeline` 在 fit 阶段无法学习到这些强信号。  
+  - 行动：在 `load_train_data` 或 `FeaturePipeline` 中显式构造同名 lag 列（例如用 `forward_returns.shift(1)`），并在单测中验证离线/在线列集合一致。  
+  - 状态：待处理
+
+- [ ] **OOF 杠杆与 overlay 参数需与提交版本同步**  
+  - 证据：当前 `main.py`/`inference_server.py` 每次重新拟合并用全量数据调 `allocation_scale`，但 Kaggle 打分窗口只有 10 天，导致 scale 与 overlay 完全过拟合历史。  
+  - 行动：利用 `train_experiment.py` 在滚动窗口上导出 `preferred_scale`、overlay 配置和 holdout Sharpe，并在提交前强制读取该 artefact 而不是实时重算；追加回测脚本比较“OOF vs. Kaggle 测试窗口”的收益波动差异。  
+  - 状态：待处理

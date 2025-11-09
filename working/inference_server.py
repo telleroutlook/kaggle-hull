@@ -46,11 +46,15 @@ from lib.strategy import (  # noqa: E402
 )
 
 
+TRUE_STRINGS = {"1", "true", "yes", "on"}
+ALLOW_MISSING_OOF = os.getenv("HULL_ALLOW_MISSING_OOF", "0").lower() in TRUE_STRINGS
+
 STATE: Dict[str, object] = {
     "model": None,
     "pipeline": None,
     "allocation_scale": 20.0,
     "overlay": None,
+    "overlay_config": None,
 }
 
 
@@ -91,25 +95,35 @@ def _ensure_model_initialized() -> None:
     model = HullModel(model_type=model_type, model_params=model_params)
     model.fit(features, target)
 
-    raw_predictions = model.predict(features, clip=False)
-    tuning_result = optimize_scale_with_rolling_cv(raw_predictions, target.to_numpy())
-    allocation_scale = tuning_result.get("scale", 20.0)
-    if allocation_scale is None:
-        tuning_fallback = tune_allocation_scale(raw_predictions, target.to_numpy())
-        allocation_scale = tuning_fallback.get("scale", 20.0)
-        tuning_result = tuning_fallback
-
     artifact_entry = load_oof_entry(log_paths.oof_metrics, model_type)
+    overlay_config = artifact_entry.get("overlay_config") if artifact_entry else None
+
+    raw_predictions = model.predict(features, clip=False)
+    tuning_result: Dict[str, float] = {}
     if artifact_entry and artifact_entry.get("preferred_scale") is not None:
         allocation_scale = float(artifact_entry.get("preferred_scale"))
         print(
-            f"♻️ Reusing OOF allocation scale {allocation_scale:.2f} "
+            f"♻️ Using OOF allocation scale {allocation_scale:.2f} "
             f"from artefact timestamp {artifact_entry.get('timestamp')}"
+        )
+    elif ALLOW_MISSING_OOF:
+        tuning_result = optimize_scale_with_rolling_cv(raw_predictions, target.to_numpy())
+        allocation_scale = tuning_result.get("scale", 20.0)
+        if allocation_scale is None:
+            tuning_fallback = tune_allocation_scale(raw_predictions, target.to_numpy())
+            allocation_scale = tuning_fallback.get("scale", 20.0)
+            tuning_result = tuning_fallback
+        print("⚠️ OOF artefact missing; using locally calibrated allocation scale.")
+    else:
+        raise RuntimeError(
+            "OOF artefact missing or lacks preferred_scale. Set HULL_ALLOW_MISSING_OOF=1 if you "
+            "intentionally want to recalibrate inside the inference server."
         )
 
     STATE["model"] = model
     STATE["pipeline"] = pipeline
     STATE["allocation_scale"] = allocation_scale
+    STATE["overlay_config"] = overlay_config
 
     print(
         f"✅ Trained {model_type} model on {len(train_df):,} rows "
@@ -166,9 +180,16 @@ def predict(test_batch):
             STATE.get("overlay"),
         )
         if overlay_state is None:
+            overlay_cfg = cast(dict | None, STATE.get("overlay_config"))
+            overlay_params = overlay_cfg or {}
             overlay_state = VolatilityOverlay(
+                lookback=overlay_params.get("lookback", 63),
+                min_periods=overlay_params.get("min_periods", 21),
+                volatility_cap=overlay_params.get("volatility_cap", 1.2),
                 reference_is_lagged=True,
-                target_volatility_quantile=OVERLAY_TARGET_QUANTILE,
+                target_volatility_quantile=overlay_params.get(
+                    "target_volatility_quantile", OVERLAY_TARGET_QUANTILE
+                ),
             )
             STATE["overlay"] = overlay_state
         overlay_result = overlay_state.transform(predictions, overlay_source)

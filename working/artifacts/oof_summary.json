@@ -1,0 +1,119 @@
+{
+  "lightgbm": {
+    "model_type": "lightgbm",
+    "timestamp": "2025-11-09T01:53:04.281781+00:00",
+    "n_rows": 8990,
+    "n_splits": 5,
+    "feature_count": 193,
+    "preferred_scale": 40.0,
+    "fold_metrics": [
+      {
+        "fold": 0,
+        "mse": 0.00014729467687962054,
+        "scale": 40.0,
+        "scale_cv_sharpe": 0.12471523204223957,
+        "sharpe": 0.04840921773301224,
+        "total_return": 1.1761892971326393,
+        "overlay_sharpe": 0.04840921773301224,
+        "overlay_total_return": 1.1761892971326393,
+        "overlay_mean_scale": 1.0,
+        "overlay_breaches": 0,
+        "std_prediction": 0.0017742836349167138,
+        "std_allocation": 0.07097134539666855,
+        "std_overlay_allocation": 0.07097134539666855,
+        "std_guard_triggered": true,
+        "model_type_used": "baseline"
+      },
+      {
+        "fold": 1,
+        "mse": 0.00010770792169039922,
+        "scale": 40.0,
+        "scale_cv_sharpe": 0.14278101243435726,
+        "sharpe": 0.03018165428327246,
+        "total_return": 0.510422984703397,
+        "overlay_sharpe": 0.029921570965531757,
+        "overlay_total_return": 0.501695286269118,
+        "overlay_mean_scale": 0.997879244388965,
+        "overlay_breaches": 181,
+        "std_prediction": 0.0023280522053972887,
+        "std_allocation": 0.09312208821589155,
+        "std_overlay_allocation": 0.09049211943008727,
+        "std_guard_triggered": true,
+        "model_type_used": "baseline"
+      },
+      {
+        "fold": 2,
+        "mse": 0.00018600536336980112,
+        "scale": 40.0,
+        "scale_cv_sharpe": 0.1170685065548768,
+        "sharpe": 0.022575809225090792,
+        "total_return": 0.41278394540168195,
+        "overlay_sharpe": 0.02330344711304332,
+        "overlay_total_return": 0.43032222215771276,
+        "overlay_mean_scale": 0.994074755252586,
+        "overlay_breaches": 252,
+        "std_prediction": 0.0029123579384463605,
+        "std_allocation": 0.11649431753785441,
+        "std_overlay_allocation": 0.10174942826249796,
+        "std_guard_triggered": true,
+        "model_type_used": "baseline"
+      },
+      {
+        "fold": 3,
+        "mse": 7.136339065225679e-05,
+        "scale": 40.0,
+        "scale_cv_sharpe": 0.10806502933815973,
+        "sharpe": 0.056996663024823056,
+        "total_return": 0.931676522354999,
+        "overlay_sharpe": 0.05699778875413625,
+        "overlay_total_return": 0.9316998272508221,
+        "overlay_mean_scale": 0.99999301761953,
+        "overlay_breaches": 5,
+        "std_prediction": 0.0017710809361742828,
+        "std_allocation": 0.07084323744697132,
+        "std_overlay_allocation": 0.07084448118047912,
+        "std_guard_triggered": true,
+        "model_type_used": "baseline"
+      },
+      {
+        "fold": 4,
+        "mse": 0.00013646804677294865,
+        "scale": 40.0,
+        "scale_cv_sharpe": 0.09421941663225566,
+        "sharpe": 0.05434506097188255,
+        "total_return": 1.4037576676079064,
+        "overlay_sharpe": 0.054751154840009836,
+        "overlay_total_return": 1.4033537777676788,
+        "overlay_mean_scale": 0.998944762488918,
+        "overlay_breaches": 35,
+        "std_prediction": 0.0024014839873947153,
+        "std_allocation": 0.09605935949578863,
+        "std_overlay_allocation": 0.093016053737431,
+        "std_guard_triggered": true,
+        "model_type_used": "baseline"
+      }
+    ],
+    "oof_metrics": {
+      "mse": 0.00012976787987300524,
+      "sharpe": 0.03984628925774268,
+      "overlay_sharpe": 0.040229420764789164,
+      "overlay_total_return": 20.700498926994523
+    },
+    "std_deviation": {
+      "predictions": 0.0026514585896963475,
+      "allocations": 0.10605834358785389,
+      "overlay_allocations": 0.10107441509308794
+    },
+    "std_guard": {
+      "threshold": 0.15,
+      "fallback_model": "baseline",
+      "min_scale": 35.0,
+      "triggered_folds": 5
+    },
+    "overlay_config": {
+      "lookback": 63,
+      "min_periods": 21,
+      "volatility_cap": 1.2
+    }
+  }
+}
