@@ -32,7 +32,7 @@ else:
 
 import kaggle_evaluation.default_inference_server  # type: ignore  # noqa: E402
 
-from lib.artifacts import load_oof_entry  # noqa: E402
+from lib.artifacts import load_first_available_oof, oof_artifact_candidates  # noqa: E402
 from lib.data import load_train_data  # noqa: E402
 from lib.env import detect_run_environment, get_data_paths, get_log_paths  # noqa: E402
 from lib.features import FeaturePipeline  # noqa: E402
@@ -95,7 +95,11 @@ def _ensure_model_initialized() -> None:
     model = HullModel(model_type=model_type, model_params=model_params)
     model.fit(features, target)
 
-    artifact_entry = load_oof_entry(log_paths.oof_metrics, model_type)
+    artifact_entry, artifact_path = load_first_available_oof(
+        model_type, oof_artifact_candidates(log_paths)
+    )
+    if artifact_entry:
+        print(f"🧾 Loaded OOF artefact from {artifact_path}")
     overlay_config = artifact_entry.get("overlay_config") if artifact_entry else None
 
     raw_predictions = model.predict(features, clip=False)

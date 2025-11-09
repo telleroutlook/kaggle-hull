@@ -21,7 +21,7 @@ else:
 
 import logging
 
-from lib.artifacts import load_oof_entry
+from lib.artifacts import load_first_available_oof, oof_artifact_candidates
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
 from lib.data import load_test_data, load_train_data, validate_data
 from lib.features import FeaturePipeline
@@ -165,6 +165,7 @@ def main():
     data_paths = get_data_paths(env)
     log_paths = get_log_paths(env)
     oof_entry = None
+    oof_path = None
     
     print(f"🏠 运行环境: {env}")
     print(f"📁 数据路径: {data_paths.test_data}")
@@ -219,12 +220,15 @@ def main():
         model_params = get_model_params(model_type)
         model = HullModel(model_type=model_type, model_params=model_params)
 
-        oof_entry = load_oof_entry(log_paths.oof_metrics, model_type)
+        oof_entry, oof_path = load_first_available_oof(
+            model_type, oof_artifact_candidates(log_paths)
+        )
         if oof_entry:
             print(
                 "🧪 Latest OOF artefact: "
                 f"Sharpe={oof_entry.get('oof_metrics', {}).get('sharpe', float('nan')):.4f}, "
-                f"Scale={oof_entry.get('preferred_scale')} (timestamp={oof_entry.get('timestamp')})"
+                f"Scale={oof_entry.get('preferred_scale')} (timestamp={oof_entry.get('timestamp')}, "
+                f"source={oof_path})"
             )
         elif not args.allow_missing_oof:
             raise RuntimeError(
