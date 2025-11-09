@@ -38,6 +38,7 @@ MODEL_PRESETS: Dict[str, Any] = {
         "loss_function": "RMSE",
     },
     "ensemble": {
+        "weights": {"lightgbm": 0.5, "xgboost": 0.3, "catboost": 0.2},
         "lightgbm": {
             "n_estimators": 2000,
             "learning_rate": 0.008,

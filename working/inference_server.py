@@ -32,8 +32,9 @@ else:
 
 import kaggle_evaluation.default_inference_server  # type: ignore  # noqa: E402
 
+from lib.artifacts import load_oof_entry  # noqa: E402
 from lib.data import load_train_data  # noqa: E402
-from lib.env import detect_run_environment, get_data_paths  # noqa: E402
+from lib.env import detect_run_environment, get_data_paths, get_log_paths  # noqa: E402
 from lib.features import FeaturePipeline  # noqa: E402
 from lib.model_registry import get_model_params, resolve_model_type  # noqa: E402
 from lib.models import HullModel  # noqa: E402
@@ -53,6 +54,19 @@ STATE: Dict[str, object] = {
 }
 
 
+def _overlay_target_from_env() -> float | None:
+    raw = os.getenv("HULL_OVERLAY_TARGET_QUANTILE")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+OVERLAY_TARGET_QUANTILE = _overlay_target_from_env()
+
+
 def _ensure_model_initialized() -> None:
     """Train the baseline model once and cache everything needed for inference."""
 
@@ -61,12 +75,18 @@ def _ensure_model_initialized() -> None:
 
     env = detect_run_environment()
     data_paths = get_data_paths(env)
+    log_paths = get_log_paths(env)
     train_df = load_train_data(data_paths)
     pipeline = FeaturePipeline()
     features = pipeline.fit_transform(train_df)
     target = train_df["forward_returns"].fillna(train_df["forward_returns"].median())
 
+    requested_env = os.getenv("HULL_MODEL_TYPE")
     model_type = resolve_model_type(None)
+    if requested_env:
+        print(f"ℹ️ HULL_MODEL_TYPE={requested_env} -> resolved '{model_type}' for inference server")
+    else:
+        print(f"ℹ️ HULL_MODEL_TYPE not set; defaulting to '{model_type}' for inference server")
     model_params = get_model_params(model_type)
     model = HullModel(model_type=model_type, model_params=model_params)
     model.fit(features, target)
@@ -78,6 +98,14 @@ def _ensure_model_initialized() -> None:
         tuning_fallback = tune_allocation_scale(raw_predictions, target.to_numpy())
         allocation_scale = tuning_fallback.get("scale", 20.0)
         tuning_result = tuning_fallback
+
+    artifact_entry = load_oof_entry(log_paths.oof_metrics, model_type)
+    if artifact_entry and artifact_entry.get("preferred_scale") is not None:
+        allocation_scale = float(artifact_entry.get("preferred_scale"))
+        print(
+            f"♻️ Reusing OOF allocation scale {allocation_scale:.2f} "
+            f"from artefact timestamp {artifact_entry.get('timestamp')}"
+        )
 
     STATE["model"] = model
     STATE["pipeline"] = pipeline
@@ -138,7 +166,10 @@ def predict(test_batch):
             STATE.get("overlay"),
         )
         if overlay_state is None:
-            overlay_state = VolatilityOverlay(reference_is_lagged=True)
+            overlay_state = VolatilityOverlay(
+                reference_is_lagged=True,
+                target_volatility_quantile=OVERLAY_TARGET_QUANTILE,
+            )
             STATE["overlay"] = overlay_state
         overlay_result = overlay_state.transform(predictions, overlay_source)
         predictions = overlay_result["allocations"]

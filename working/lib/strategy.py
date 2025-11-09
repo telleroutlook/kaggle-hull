@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Iterable, Dict, Any, Deque
+from typing import Iterable, Dict, Any, Deque, List
 
 import numpy as np
 from sklearn.model_selection import TimeSeriesSplit
@@ -114,17 +114,21 @@ class VolatilityOverlay:
         volatility_cap: float = 1.2,
         clip_bounds: tuple[float, float] = (0.0, 2.0),
         reference_is_lagged: bool = False,
+        target_volatility_quantile: float | None = None,
     ) -> None:
         self.lookback = max(2, lookback)
         self.min_periods = min_periods or max(10, self.lookback // 3)
         self.volatility_cap = volatility_cap
         self.clip_bounds = clip_bounds
         self.reference_is_lagged = reference_is_lagged
+        self.target_volatility_quantile = target_volatility_quantile
 
         self.market_returns: Deque[float] = deque()
         self.strategy_returns: Deque[float] = deque()
         self.prev_allocation: float | None = None
         self.breaches: int = 0
+        self.scaling_history: List[float] = []
+        self.target_history: List[float] = []
 
     def _append_realized(self, realized_return: float) -> None:
         if not np.isfinite(realized_return) or self.prev_allocation is None:
@@ -135,17 +139,31 @@ class VolatilityOverlay:
             self.market_returns.popleft()
             self.strategy_returns.popleft()
 
-    def _compute_scale(self) -> float:
-        if len(self.market_returns) < self.min_periods or len(self.strategy_returns) < self.min_periods:
-            return 1.0
+    def _calculate_target_vol(self) -> float:
+        if not self.market_returns:
+            return 0.0
+        market_series = np.asarray(self.market_returns, dtype=float)
+        base_target = float(np.std(market_series)) * self.volatility_cap
+        if (
+            self.target_volatility_quantile is not None
+            and 0 < self.target_volatility_quantile < 1
+            and len(market_series) >= self.min_periods
+        ):
+            adaptive = float(np.quantile(np.abs(market_series), self.target_volatility_quantile))
+            base_target = max(adaptive, 1e-6)
+        return max(base_target, 1e-6)
 
-        market_vol = float(np.std(self.market_returns))
+    def _compute_scale(self) -> tuple[float, float]:
+        if len(self.market_returns) < self.min_periods or len(self.strategy_returns) < self.min_periods:
+            return 1.0, self._calculate_target_vol()
+
         strat_vol = float(np.std(self.strategy_returns))
-        target_vol = market_vol * self.volatility_cap
-        if strat_vol > target_vol and strat_vol > 0 and target_vol > 0:
+        target_vol = self._calculate_target_vol()
+        if strat_vol > target_vol and strat_vol > 0:
             self.breaches += 1
-            return target_vol / max(strat_vol, 1e-6)
-        return 1.0
+            scale = target_vol / max(strat_vol, 1e-6)
+            return scale, target_vol
+        return 1.0, target_vol
 
     def transform(self, allocations: np.ndarray, reference_returns: np.ndarray) -> Dict[str, np.ndarray]:
         """Apply the overlay to a sequence of allocations.
@@ -172,18 +190,25 @@ class VolatilityOverlay:
                 if idx > 0 and np.isfinite(refs[idx - 1]):
                     self._append_realized(refs[idx - 1])
 
-            scale_factor = self._compute_scale()
+            scale_factor, target_vol = self._compute_scale()
             scaling_factors[idx] = scale_factor
             scaled_value = float(np.clip(raw_allocation * scale_factor, *self.clip_bounds))
             scaled[idx] = scaled_value
             self.prev_allocation = scaled_value
+            self.scaling_history.append(scale_factor)
+            self.target_history.append(target_vol)
 
             if not self.reference_is_lagged and np.isfinite(refs[idx]):
                 # Realized return for the same timestamp becomes available after
                 # the allocation is placed; append it for the next step.
                 self._append_realized(refs[idx])
 
-        return {"allocations": scaled, "scaling_factors": scaling_factors}
+        target_series = np.array(self.target_history[-len(scaled) :], dtype=float)
+        return {
+            "allocations": scaled,
+            "scaling_factors": scaling_factors,
+            "target_volatility": target_series,
+        }
 
 
 def apply_volatility_overlay(
@@ -194,6 +219,7 @@ def apply_volatility_overlay(
     min_periods: int | None = None,
     volatility_cap: float = 1.2,
     reference_is_lagged: bool = False,
+    target_volatility_quantile: float | None = None,
 ) -> Dict[str, Any]:
     """Convenience wrapper that instantiates :class:`VolatilityOverlay`."""
 
@@ -202,6 +228,7 @@ def apply_volatility_overlay(
         min_periods=min_periods,
         volatility_cap=volatility_cap,
         reference_is_lagged=reference_is_lagged,
+        target_volatility_quantile=target_volatility_quantile,
     )
     result = overlay.transform(allocations, realized_returns)
     return {**result, "breaches": overlay.breaches}

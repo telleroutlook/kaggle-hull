@@ -20,10 +20,11 @@ else:
 
 import logging
 
+from lib.artifacts import load_oof_entry
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
 from lib.data import load_test_data, load_train_data, validate_data
 from lib.features import FeaturePipeline
-from lib.model_registry import get_model_params, resolve_model_type
+from lib.model_registry import DEFAULT_MODEL_TYPE, MODEL_PRESETS, get_model_params, resolve_model_type
 from lib.models import HullModel, create_submission
 from lib.strategy import (
     VolatilityOverlay,
@@ -32,6 +33,8 @@ from lib.strategy import (
     tune_allocation_scale,
 )
 from lib.utils import PerformanceTracker, save_logs, save_metrics, validate_submission
+
+TRUE_STRINGS = {"1", "true", "yes", "on"}
 
 # 尝试导入配置模块
 try:
@@ -55,10 +58,24 @@ def parse_args(argv=None):
     
     parser.add_argument(
         "--model-type",
-        choices=["baseline", "lightgbm", "xgboost", "catboost", "ensemble"],
-        default="baseline",
-        help="选择模型类型 (默认: baseline)"
+        choices=sorted(MODEL_PRESETS.keys()),
+        default=None,
+        help="选择模型类型 (默认：使用HULL_MODEL_TYPE或lightgbm)"
     )
+    reuse_default = os.getenv("HULL_REUSE_OOF_SCALE", "1").lower() in TRUE_STRINGS
+    parser.add_argument(
+        "--reuse-oof-scale",
+        dest="reuse_oof_scale",
+        action="store_true",
+        help="复用 train_experiment.py 导出的 OOF 杠杆/指标",
+    )
+    parser.add_argument(
+        "--no-reuse-oof-scale",
+        dest="reuse_oof_scale",
+        action="store_false",
+        help="禁用 OOF 杠杆复用",
+    )
+    parser.set_defaults(reuse_oof_scale=reuse_default)
     
     parser.add_argument(
         "--data-path",
@@ -103,6 +120,18 @@ def parse_args(argv=None):
         action="store_true",
         help="禁用波动率风险overlay",
     )
+    overlay_target_default = os.getenv("HULL_OVERLAY_TARGET_QUANTILE")
+    try:
+        overlay_target_default = None if overlay_target_default is None else float(overlay_target_default)
+    except ValueError:
+        overlay_target_default = None
+
+    parser.add_argument(
+        "--risk-overlay-target-quantile",
+        type=float,
+        default=overlay_target_default,
+        help="Overlay自适应目标波动率分位数 (0-1)",
+    )
     
     # 处理不同的运行环境参数
     if argv is None:
@@ -145,6 +174,7 @@ def main():
     env = detect_run_environment()
     data_paths = get_data_paths(env)
     log_paths = get_log_paths(env)
+    oof_entry = None
     
     print(f"🏠 运行环境: {env}")
     print(f"📁 数据路径: {data_paths.test_data}")
@@ -187,8 +217,25 @@ def main():
         tracker.record_memory_usage()
         
         model_type = resolve_model_type(args.model_type)
+        if args.model_type is None:
+            logger.info(
+                "Model type not specified, resolved to '%s' (HULL_MODEL_TYPE=%s, default=%s)",
+                model_type,
+                os.getenv("HULL_MODEL_TYPE", "<unset>"),
+                DEFAULT_MODEL_TYPE,
+            )
+        else:
+            logger.info("Model type explicitly requested: %s", args.model_type)
         model_params = get_model_params(model_type)
         model = HullModel(model_type=model_type, model_params=model_params)
+
+        oof_entry = load_oof_entry(log_paths.oof_metrics, model_type)
+        if oof_entry:
+            print(
+                "🧪 Latest OOF artefact: "
+                f"Sharpe={oof_entry.get('oof_metrics', {}).get('sharpe', float('nan')):.4f}, "
+                f"Scale={oof_entry.get('preferred_scale')} (timestamp={oof_entry.get('timestamp')})"
+            )
         target = train_data["forward_returns"].fillna(train_data["forward_returns"].median())
         model.fit(train_features, target)
 
@@ -202,6 +249,16 @@ def main():
                 "cv_sharpe": tuning.get("strategy_sharpe", 0.0),
                 "strategy_sharpe": tuning.get("strategy_sharpe", 0.0),
             }
+        if oof_entry:
+            artefact_scale = oof_entry.get("preferred_scale")
+        else:
+            artefact_scale = None
+        if args.reuse_oof_scale and artefact_scale is not None:
+            allocation_scale = float(artefact_scale)
+            print(
+                f"♻️ Reusing allocation scale {allocation_scale:.2f} from OOF artefact "
+                f"recorded at {oof_entry.get('timestamp')}"
+            )
         if args.verbose:
             print(
                 f"🎯 Allocation scale={allocation_scale:.2f}, "
@@ -214,6 +271,8 @@ def main():
         tracker.record_memory_usage()
         tracker.end_task()
 
+        overlay = None
+        overlay_result = None
         if not args.disable_risk_overlay:
             overlay_source = None
             if "lagged_forward_returns" in test_data.columns:
@@ -226,6 +285,7 @@ def main():
                     lookback=args.risk_overlay_lookback,
                     min_periods=args.risk_overlay_min_periods,
                     reference_is_lagged=True,
+                    target_volatility_quantile=args.risk_overlay_target_quantile,
                 )
                 overlay_result = overlay.transform(predictions, overlay_source)
                 predictions = overlay_result["allocations"]
@@ -265,6 +325,12 @@ def main():
             'model_type': model_type,
             'environment': env
         }
+        if oof_entry:
+            metrics['oof_sharpe'] = float(oof_entry.get('oof_metrics', {}).get('sharpe', 0.0))
+            metrics['oof_scale_timestamp'] = oof_entry.get('timestamp')
+        if overlay_result is not None:
+            metrics['overlay_mean_scale'] = float(overlay_result['scaling_factors'].mean())
+            metrics['overlay_breaches'] = int(getattr(overlay, 'breaches', 0))
         
         # 保存日志和指标
         save_logs(tracker.get_summary(), log_paths.log_jsonl)

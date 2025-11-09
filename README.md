@@ -134,3 +134,11 @@
 评估API使用的文件。请参阅演示提交以了解如何使用API。
 
 竞赛结束后，我们将定期在我们的网站上发布数据，欢迎你将其用于自己的交易。
+
+## 运行与部署注意事项
+
+- **统一模型类型**：通过 `HULL_MODEL_TYPE` 环境变量即可同时控制 CLI（`working/main.py`）与推理服务（`working/inference_server.py`）的默认模型类型。可使用 `--model-type` 显式覆盖，若未指定则日志会打印当前解析结果及 `HULL_MODEL_TYPE` 值。
+- **OOF 校准 artefact**：执行 `python working/train_experiment.py --model-type lightgbm --n-splits 5` 会在 `working/artifacts/oof_summary.json` 中固化 TimeSeriesSplit 结果（Sharpe、杠杆、折线）。`main.py` 与 `inference_server.py` 会自动读取该文件并在 `--reuse-oof-scale`（默认开启）时复用最新的杠杆校准值，确保提交前后保持一致的尺度。
+- **示例脚本 main_fixed.py**：`working/main_fixed.py` 仅用于演示 notebook 管线，默认阻止执行；若确需生成随机预测可显式传入 `--allow-random-baseline`。正式提交请始终使用 `working/main.py` 或 `working/inference_server.py`。
+- **Kaggle 单元格运行**：`kaggle_simple_cell_fixed.py` 现支持 `VERBOSE=1`（打印更多检查详情）与 `FORCE_PIP_INSTALL=1`（强制安装 requirements），并以流式方式显示 pip/推理日志，便于定位 notebook 超时或 OOM 风险。
+- **归档打包**：运行 `python create_kaggle_archive.py [--include-tests]` 会生成 `input/kaggle_hull_solver.zip` 及对应的 `.sha256` 校验文件。默认排除 `working/tests` 以缩小体积，若需要可加 `--include-tests`。归档始终包含 `working/artifacts/`，以确保 OOF artefact 能被部署端重用。

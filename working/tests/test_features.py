@@ -12,12 +12,18 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 try:
-    from lib.features import engineer_features, handle_missing_values, add_statistical_features, get_feature_groups
+    from lib.features import (
+        engineer_features,
+        handle_missing_values,
+        add_statistical_features,
+        get_feature_groups,
+        FeaturePipeline,
+    )
 except ImportError:
     # 如果lib.features导入失败，尝试直接导入
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
-    from features import engineer_features, handle_missing_values, add_statistical_features, get_feature_groups
+    from features import engineer_features, handle_missing_values, add_statistical_features, get_feature_groups, FeaturePipeline
 
 
 def test_handle_missing_values():
@@ -83,11 +89,32 @@ def test_engineer_features():
     
     feature_cols = ['feature1', 'feature2']
     result = engineer_features(df, feature_cols)
-    
-    # 验证结果
-    assert result.shape[0] == 5  # 行数相同
-    assert result.shape[1] > 2   # 特征数增加
-    assert not result.isnull().any().any()  # 没有缺失值
+
+    assert result.shape[0] == 5
+    assert result.shape[1] >= len(feature_cols)
+    assert not result.isnull().any().any()
+
+
+def test_engineer_features_can_return_pipeline_for_reuse():
+    df = pd.DataFrame(
+        {
+            "feature1": [1.0, 2.0, 3.0],
+            "feature2": [5.0, 6.0, 7.0],
+            "forward_returns": [0.0, 0.0, 0.0],
+        }
+    )
+
+    (train_features, pipeline) = engineer_features(df, ["feature1", "feature2"], return_pipeline=True)
+    assert pipeline is not None
+
+    new_df = pd.DataFrame(
+        {
+            "feature1": [4.0, 5.0],
+            "feature2": [8.0, 9.0],
+        }
+    )
+    transformed = engineer_features(new_df, ["feature1", "feature2"], pipeline=pipeline)
+    assert transformed.shape[1] == train_features.shape[1]
     
 
 def test_get_feature_groups():
@@ -101,6 +128,23 @@ def test_get_feature_groups():
         assert group in groups
         assert isinstance(groups[group], list)
         assert len(groups[group]) > 0
+
+
+def test_feature_pipeline_handles_small_samples_without_quantile_clipping():
+    """验证在clip_quantile=0的小样本场景不会崩溃且产出无缺失值"""
+
+    df = pd.DataFrame(
+        {
+            "feature_a": [1.0, np.nan, 3.0],
+            "feature_b": [0.5, 0.6, np.nan],
+            "forward_returns": [0.01, 0.02, 0.03],
+        }
+    )
+    pipeline = FeaturePipeline(clip_quantile=0)
+    transformed = pipeline.fit_transform(df[["feature_a", "feature_b"]])
+
+    assert transformed.shape[0] == len(df)
+    assert not transformed.isnull().any().any()
 
 
 if __name__ == "__main__":

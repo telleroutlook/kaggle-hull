@@ -24,6 +24,7 @@ import logging
 from lib.env import detect_run_environment, get_data_paths, get_log_paths
 from lib.data import load_test_data, validate_data
 from lib.features import engineer_features, get_feature_columns
+from lib.model_registry import MODEL_PRESETS
 from lib.models import HullModel, create_submission
 from lib.utils import PerformanceTracker, save_logs, save_metrics, validate_submission, write_result_json
 
@@ -49,9 +50,9 @@ def parse_args(argv=None):
     
     parser.add_argument(
         "--model-type",
-        choices=["baseline", "lightgbm", "xgboost", "ensemble"],
-        default="baseline",
-        help="选择模型类型 (默认: baseline)"
+        choices=sorted(MODEL_PRESETS.keys()),
+        default=None,
+        help="选择模型类型用于日志展示 (默认：自动)"
     )
     
     parser.add_argument(
@@ -80,6 +81,11 @@ def parse_args(argv=None):
         action="store_true",
         help="详细输出模式"
     )
+    parser.add_argument(
+        "--allow-random-baseline",
+        action="store_true",
+        help="确认你理解该脚本只会输出随机预测，仅供管线调试"
+    )
     
     # 处理不同的运行环境参数
     if argv is None:
@@ -100,6 +106,14 @@ def main():
     
     args = parse_args()
     
+    if not args.allow_random_baseline:
+        print(
+            "❌ main_fixed.py 仅提供随机预测示例，为避免误用被禁用。"
+            "请改用 working/main.py 或 inference_server.py 运行正式流程。"
+            "如需继续使用该演示脚本，请添加 --allow-random-baseline 标志。"
+        )
+        return 2
+
     # 初始化配置
     if CONFIG_AVAILABLE and args.config:
         config_manager = ConfigManager(str(args.config))

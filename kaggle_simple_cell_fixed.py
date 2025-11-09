@@ -6,6 +6,14 @@ import sys
 import json
 import subprocess
 
+TRUE_STRINGS = {"1", "true", "yes", "on"}
+VERBOSE = os.getenv("VERBOSE", "0").lower() in TRUE_STRINGS
+
+
+def vlog(message: str) -> None:
+    if VERBOSE:
+        print(message)
+
 # 自动查找模型目录的函数
 def find_solver_path():
     """通过在/kaggle/input中搜索自动查找模型路径"""
@@ -91,7 +99,7 @@ else:
         print(f"  - {item}")
         item_path = os.path.join("/kaggle/input", item)
         if os.path.isdir(item_path):
-            print(f"    内容: {os.listdir(item_path)}")
+            vlog(f"    内容: {os.listdir(item_path)}")
     # 尝试备用路径
     possible_fallbacks = [
         "/kaggle/input/hull01",
@@ -115,14 +123,14 @@ print("\n检查模型目录...")
 if os.path.exists(actual_solver_path):
     print(f"模型路径存在: {actual_solver_path}")
     for item in os.listdir(actual_solver_path):
-        print(f"  - {item}")
+        vlog(f"  - {item}")
     
     # 检查lib目录
     lib_path = os.path.join(actual_solver_path, "lib")
     if os.path.exists(lib_path):
-        print(f"\nLib目录存在: {lib_path}")
+        vlog(f"\nLib目录存在: {lib_path}")
         for item in os.listdir(lib_path):
-            print(f"  - {item}")
+            vlog(f"  - {item}")
     else:
         print("⚠️  Lib目录不存在，可能影响模块导入")
 else:
@@ -186,11 +194,9 @@ try:
     if requirements_path and should_install:
         print(f"安装依赖: {requirements_path}")
         pip_cmd = [sys.executable, "-m", "pip", "install", "-r", requirements_path]
-        pip_result = subprocess.run(pip_cmd, capture_output=True, text=True)
+        pip_result = subprocess.run(pip_cmd)
         if pip_result.returncode != 0:
-            print("❌ pip安装失败，输出如下：")
-            print(pip_result.stdout)
-            print(pip_result.stderr)
+            print(f"❌ pip安装失败 (exit code {pip_result.returncode})，请检查上方日志")
         else:
             print("✅ 依赖安装完成")
     elif requirements_path and not should_install:
@@ -202,13 +208,9 @@ try:
     print("运行评估API推理服务器...")
     result = subprocess.run([
         sys.executable, "inference_server.py"
-    ], capture_output=True, text=True)
-    
-    print("模型输出:")
-    print(result.stdout)
-    if result.stderr:
-        print("模型错误:")
-        print(result.stderr)
+    ])
+    if result.returncode != 0:
+        print(f"❌ 推理服务器返回非零状态 {result.returncode}，请检查上方日志")
     
     # 检查提交文件
     submission_parquet = "/kaggle/working/submission.parquet"

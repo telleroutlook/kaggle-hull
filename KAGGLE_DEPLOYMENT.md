@@ -40,10 +40,10 @@
 运行打包脚本生成Kaggle部署包：
 
 ```bash
-python3 create_kaggle_archive.py
+python3 create_kaggle_archive.py [--include-tests]
 ```
 
-这将在 `input/` 目录下生成 `kaggle_hull_solver.zip` 文件。
+这将在 `input/` 目录下生成 `kaggle_hull_solver.zip` 文件及同名 `.sha256` 校验文件。默认为减小体积会跳过 `working/tests` 目录，如需包含测试可添加 `--include-tests`。
 
 ### 2. 上传到Kaggle
 
@@ -73,6 +73,11 @@ python3 create_kaggle_archive.py
    - 若检测到 `requirements.txt` 则执行 `pip install -r requirements.txt`；
    - 调用 `working/inference_server.py`，启动官方 `kaggle_evaluation` 网关与推理服务器，生成 `submission.parquet` 及辅助的 `submission.csv`；
    - 将关键日志输出到cell，方便排查。
+
+脚本支持以下环境变量：
+
+- `VERBOSE=1`：打印详细目录/依赖检查信息。
+- `FORCE_PIP_INSTALL=1`：即使依赖已满足也强制执行 `pip install`。
 
 > 如需安装额外依赖，可直接在 `kaggle_simple_cell_fixed.py` 中“检查依赖”位置添加 `subprocess.run([sys.executable, '-m', 'pip', 'install', 'pkg'])`。
 
@@ -157,7 +162,15 @@ another-package>=2.0.0
 
 如果需要添加额外的Python模块：
 - 将文件放在 `working/` 目录下
-- 确保在 `create_kaggle_archive.py` 的 `files_to_include` 列表中添加相应路径
+- `create_kaggle_archive.py` 已默认包含 `working/lib/`、`working/artifacts/` 以及核心入口脚本。若添加新的顶级目录，请同步更新 `build_manifest()`。
+
+OOF artefact（`working/artifacts/oof_summary.json`）会在运行 `python working/train_experiment.py ...` 后生成，并在打包时自动带上。
+
+## HULL_MODEL_TYPE 与 OOF Artefact
+
+- `HULL_MODEL_TYPE` 环境变量用于指定默认模型类型，CLI 与推理服务都会读取该值；也可通过 `--model-type` 显式覆盖。
+- 在提交前运行 `working/train_experiment.py` 可生成最新的 TimeSeriesSplit/OOF 指标，`main.py` 与 `inference_server.py` 会在 `--reuse-oof-scale`（默认开启）状态下自动复用 artefact 中记录的杠杆尺度与 Sharpe，以缩短 notebook 调参时间并保持线上/本地一致。
+- `working/main_fixed.py` 仅为 notebook 调试脚本，默认拒绝运行随机预测。若确需演示可添加 `--allow-random-baseline`，正式提交务必使用 `main.py`/`inference_server.py`。
 
 ## 调试技巧
 

@@ -8,41 +8,40 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Iterable, List, Optional
 
+from .data import get_feature_columns as data_get_feature_columns
 
-def engineer_features(df: pd.DataFrame, feature_cols: Optional[List[str]] = None) -> pd.DataFrame:
-    """基础特征工程"""
-    
+
+def engineer_features(
+    df: pd.DataFrame,
+    feature_cols: Optional[List[str]] = None,
+    *,
+    pipeline: FeaturePipeline | None = None,
+    return_pipeline: bool = False,
+    pipeline_kwargs: Optional[Dict[str, object]] = None,
+) -> pd.DataFrame | tuple[pd.DataFrame, FeaturePipeline]:
+    """简化版特征工程入口，对齐 FeaturePipeline 逻辑。
+
+    Args:
+        df: 原始数据，其中至少包含特征列。
+        feature_cols: 显式特征列；未指定时会使用 data.get_feature_columns。
+        pipeline: 可复用的 FeaturePipeline 实例。
+        return_pipeline: 是否在返回值中附带 pipeline，方便调用方复用。
+        pipeline_kwargs: 构造新 pipeline 时使用的参数（如 clip_quantile 等）。
+    """
+
     if feature_cols is None:
-        from .data import get_feature_columns
-        feature_cols = get_feature_columns(df)
-    
-    # 创建特征副本
-    features = df[feature_cols].copy()
-    
-    # 处理缺失值
-    features = handle_missing_values(features)
-    
-    # 添加基础统计特征
-    features = add_statistical_features(features)
+        feature_cols = data_get_feature_columns(df)
 
-    # 为了在训练/推理阶段保持稳定，确保没有缺失值
-    features = features.ffill()
-    numeric_cols = features.select_dtypes(include=[np.number]).columns
-    if len(numeric_cols) > 0:
-        median_values = features[numeric_cols].median()
-        features[numeric_cols] = features[numeric_cols].fillna(median_values)
-        if features[numeric_cols].isnull().any().any():
-            features[numeric_cols] = features[numeric_cols].fillna(0)
-    non_numeric_cols = [col for col in features.columns if col not in numeric_cols]
-    for col in non_numeric_cols:
-        if features[col].isnull().any():
-            mode_series = features[col].mode()
-            fill_value = mode_series.iloc[0] if not mode_series.empty else "unknown"
-            features[col] = features[col].fillna(fill_value)
+    feature_view = df[feature_cols].copy()
+    active_pipeline = pipeline or FeaturePipeline(**(pipeline_kwargs or {}))
+    features = (
+        active_pipeline.fit_transform(feature_view, feature_cols)
+        if pipeline is None
+        else active_pipeline.transform(feature_view)
+    )
 
-    if features.isnull().any().any():
-        features = features.fillna(0)
-    
+    if return_pipeline:
+        return features, active_pipeline
     return features
 
 
@@ -62,50 +61,55 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
-    """添加统计特征"""
-    
-    # 导入配置
+    """添加统计特征，使用向量化Rolling减少重复计算"""
+
     try:
         from .config import get_config
+
         config = get_config()
         features_config = config.get_features_config()
         max_features = features_config['max_features']
         rolling_windows = features_config['rolling_windows']
         lag_periods = features_config['lag_periods']
     except ImportError:
-        # 如果配置模块不可用，使用默认值
         max_features = 20
         rolling_windows = [5, 10, 20]
         lag_periods = [1, 2, 3]
-    
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    
-    # 只对数值列添加特征，避免内存爆炸
-    selected_cols = numeric_cols[:min(max_features, len(numeric_cols))]  # 限制特征数量
-    
-    # 使用字典推导式优化内存使用
-    new_features = {}
-    
-    # 添加滚动统计特征
+
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if not numeric_cols:
+        return df
+
+    selected_cols = numeric_cols[: min(max_features, len(numeric_cols))]
+    selected = df[selected_cols]
+    feature_frames: list[pd.DataFrame] = []
+
     for window in rolling_windows:
-        if len(df) >= window:
-            for col in selected_cols:
-                rolling_mean = df[col].rolling(window=window, min_periods=window).mean()
-                rolling_std = df[col].rolling(window=window, min_periods=window).std()
-                # 向后平移一步，避免使用当前行的信息
-                new_features[f'{col}_rolling_mean_{window}'] = rolling_mean.shift(1)
-                new_features[f'{col}_rolling_std_{window}'] = rolling_std.shift(1)
-    
-    # 添加滞后特征
-    for lag in lag_periods:
-        for col in selected_cols:
-            new_features[f'{col}_lag_{lag}'] = df[col].shift(lag)
-    
-    # 一次性添加所有新特征，避免DataFrame碎片化
-    new_features_df = pd.DataFrame(new_features, index=df.index)
-    df = pd.concat([df, new_features_df], axis=1)
-    
-    return df
+        if len(df) < window:
+            continue
+        rolling_window = selected.rolling(window=window, min_periods=window)
+        means = rolling_window.mean().shift(1).add_suffix(f"_rolling_mean_{window}")
+        stds = (
+            rolling_window.std(ddof=0)
+            .fillna(0.0)
+            .shift(1)
+            .add_suffix(f"_rolling_std_{window}")
+        )
+        feature_frames.extend([means.astype("float32"), stds.astype("float32")])
+
+    lag_frames = {
+        f"{col}_lag_{lag}": selected[col].shift(lag).astype("float32")
+        for lag in lag_periods
+        for col in selected_cols
+    }
+    if lag_frames:
+        feature_frames.append(pd.DataFrame(lag_frames, index=df.index))
+
+    if not feature_frames:
+        return df
+
+    enriched = pd.concat([df] + feature_frames, axis=1)
+    return enriched
 
 
 class FeaturePipeline:
@@ -134,6 +138,7 @@ class FeaturePipeline:
         self.standardization_stats: Dict[str, tuple[float, float]] = {}
         self.indicator_columns: List[str] = []
         self.group_features: Dict[str, List[str]] = {}
+        self._cached_output_columns: Optional[List[str]] = None
 
     def fit(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> "FeaturePipeline":
         """Collect statistics needed for deterministic transforms."""
@@ -142,6 +147,7 @@ class FeaturePipeline:
             feature_cols = get_feature_columns(df)
 
         self.feature_columns = list(feature_cols)
+        self._cached_output_columns = None
         features = df[self.feature_columns].copy()
         self.numeric_columns = features.select_dtypes(include=[np.number]).columns.tolist()
         self.categorical_columns = [col for col in self.feature_columns if col not in self.numeric_columns]
@@ -150,7 +156,8 @@ class FeaturePipeline:
         for col in self.numeric_columns:
             series = pd.to_numeric(features[col], errors="coerce")
             median = float(series.median(skipna=True)) if series.notnull().any() else 0.0
-            self.fill_values[col] = median
+            fill_value = median
+            self.fill_values[col] = fill_value
 
             if self.clip_quantile > 0 and series.notnull().sum() > 10:
                 lower = float(series.quantile(self.clip_quantile))
@@ -160,6 +167,10 @@ class FeaturePipeline:
                 max_val = series.max(skipna=True)
                 lower = float(min_val) if pd.notna(min_val) else float(fill_value)
                 upper = float(max_val) if pd.notna(max_val) else float(fill_value)
+            if not np.isfinite(lower):
+                lower = float(fill_value)
+            if not np.isfinite(upper):
+                upper = float(fill_value)
             if lower == upper:
                 upper = lower + 1e-6
             self.clip_bounds[col] = (lower, upper)
@@ -242,28 +253,17 @@ class FeaturePipeline:
     def output_columns(self) -> List[str]:
         if not self.feature_columns:
             raise RuntimeError("FeaturePipeline must be fit before accessing output columns.")
-        extra_cols = []
-        extra_cols.extend(f"{col}_is_missing" for col in self.indicator_columns)
-        if self.extra_group_stats:
-            for group_name, cols in self.group_features.items():
-                if not cols:
-                    continue
-                extra_cols.append(f"{group_name}_row_mean")
-                extra_cols.append(f"{group_name}_row_std")
-        return self.feature_columns + extra_cols
-
-
-def get_feature_columns(df: pd.DataFrame) -> list:
-    """获取特征列名"""
-    
-    # 排除目标变量和其他非特征列
-    exclude_cols = ['date_id', 'forward_returns', 'risk_free_rate', 
-                   'market_forward_excess_returns', 'is_scored',
-                   'lagged_forward_returns', 'lagged_risk_free_rate', 
-                   'lagged_market_forward_excess_returns']
-    
-    feature_cols = [col for col in df.columns if col not in exclude_cols]
-    return feature_cols
+        if self._cached_output_columns is None:
+            extra_cols: List[str] = []
+            extra_cols.extend(f"{col}_is_missing" for col in self.indicator_columns)
+            if self.extra_group_stats:
+                for group_name, cols in self.group_features.items():
+                    if not cols:
+                        continue
+                    extra_cols.append(f"{group_name}_row_mean")
+                    extra_cols.append(f"{group_name}_row_std")
+            self._cached_output_columns = self.feature_columns + extra_cols
+        return self._cached_output_columns
 
 
 def get_feature_groups() -> dict:
@@ -280,10 +280,14 @@ def get_feature_groups() -> dict:
     }
 
 
+get_feature_columns = data_get_feature_columns
+
+
 __all__ = [
     "engineer_features",
     "handle_missing_values", 
     "add_statistical_features",
     "FeaturePipeline",
     "get_feature_groups",
+    "get_feature_columns",
 ]

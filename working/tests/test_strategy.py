@@ -29,3 +29,18 @@ def test_volatility_overlay_handles_lagged_reference():
     result = overlay.transform(allocations, lagged)
     assert result["allocations"].shape == allocations.shape
     assert np.isfinite(result["allocations"]).all()
+
+
+def test_volatility_overlay_emits_target_volatility_history():
+    allocations = np.linspace(0.5, 1.5, 30)
+    market_returns = np.sin(np.linspace(0, 2, 30)) * 0.01
+    overlay = VolatilityOverlay(
+        lookback=10,
+        min_periods=5,
+        reference_is_lagged=False,
+        target_volatility_quantile=0.6,
+    )
+    result = overlay.transform(allocations, market_returns)
+    assert "target_volatility" in result
+    assert result["target_volatility"].shape == allocations.shape
+    assert (result["target_volatility"] >= 0).all()

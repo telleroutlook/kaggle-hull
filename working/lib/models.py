@@ -11,7 +11,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 
-def create_baseline_model(**overrides):
+def create_baseline_model(random_state: Optional[int] = 42, **overrides):
     """创建基线模型"""
 
     # 导入配置
@@ -31,6 +31,9 @@ def create_baseline_model(**overrides):
             "random_state": 42,
         }
 
+    if random_state is not None:
+        default_params["random_state"] = random_state
+
     default_params.update(overrides)
 
     try:
@@ -38,7 +41,7 @@ def create_baseline_model(**overrides):
         return RandomForestRegressor(
             n_estimators=default_params.get("n_estimators", 200),
             max_depth=default_params.get("max_depth", 12),
-            random_state=default_params.get("random_state", 42),
+            random_state=default_params.get("random_state", random_state or 42),
             min_samples_leaf=default_params.get("min_samples_leaf", 5),
             n_jobs=-1,
         )
@@ -59,7 +62,7 @@ def create_baseline_model(**overrides):
         return SimpleModel()
 
 
-def create_lightgbm_model(**overrides):
+def create_lightgbm_model(random_state: Optional[int] = 42, **overrides):
     """LightGBM 模型"""
 
     try:
@@ -81,11 +84,14 @@ def create_lightgbm_model(**overrides):
         "n_jobs": -1,
         "verbosity": -1,
     }
+    if random_state is not None:
+        params.setdefault("random_state", random_state)
+        params.setdefault("seed", random_state)
     params.update(overrides)
     return LGBMRegressor(**params)
 
 
-def create_xgboost_model(**overrides):
+def create_xgboost_model(random_state: Optional[int] = 42, **overrides):
     """XGBoost 模型"""
 
     try:
@@ -106,11 +112,14 @@ def create_xgboost_model(**overrides):
         "tree_method": "hist",
         "n_jobs": -1,
     }
+    if random_state is not None:
+        params.setdefault("random_state", random_state)
+        params.setdefault("seed", random_state)
     params.update(overrides)
     return XGBRegressor(**params)
 
 
-def create_catboost_model(**overrides):
+def create_catboost_model(random_state: Optional[int] = 42, **overrides):
     """CatBoost 回归模型"""
 
     try:
@@ -130,15 +139,33 @@ def create_catboost_model(**overrides):
         "thread_count": -1,
         "verbose": False,
     }
+    if random_state is not None:
+        params.setdefault("random_seed", random_state)
     params.update(overrides)
     return CatBoostRegressor(**params)
 
 
 class AveragingEnsemble:
-    """简单均值集成器"""
+    """简单均值集成器，支持自定义权重"""
 
-    def __init__(self, base_models: Sequence):
-        self.base_models = base_models
+    def __init__(self, base_models: Sequence, weights: Sequence[float] | None = None):
+        self.base_models = list(base_models)
+        if not self.base_models:
+            raise ValueError("至少需要一个基础模型用于集成")
+        self.weights = self._normalize_weights(weights)
+
+    def _normalize_weights(self, weights: Sequence[float] | None) -> np.ndarray:
+        if weights is None:
+            arr = np.ones(len(self.base_models), dtype=float)
+        else:
+            arr = np.asarray(list(weights), dtype=float)
+            if arr.shape[0] != len(self.base_models):
+                raise ValueError("权重数量必须与基础模型数量一致")
+        total = arr.sum()
+        if total <= 0:
+            arr = np.ones(len(self.base_models), dtype=float)
+            total = arr.sum()
+        return arr / total
 
     def fit(self, X, y):
         for model in self.base_models:
@@ -147,43 +174,93 @@ class AveragingEnsemble:
 
     def predict(self, X):
         predictions = np.vstack([model.predict(X) for model in self.base_models])
-        return predictions.mean(axis=0)
+        return np.average(predictions, axis=0, weights=self.weights)
 
 
 class HullModel:
     """Hull Tactical 预测模型"""
     
-    def __init__(self, model_type: str = "baseline", model_params: Optional[Dict[str, Any]] = None):
-        self.model_type = model_type
-        self.model_params = model_params or {}
+    def __init__(
+        self,
+        model_type: str = "baseline",
+        model_params: Optional[Dict[str, Any]] = None,
+        *,
+        random_state: Optional[int] = 42,
+        auto_validation_fraction: float = 0.1,
+        enable_early_stopping: bool = True,
+    ):
+        self.model_type = model_type.lower()
+        params = dict(model_params or {})
+        self.fit_params = params.pop("fit_params", {})
+        self.model_params = params
         self.model = None
         self.feature_columns = None
+        self.random_state = random_state
+        self.auto_validation_fraction = auto_validation_fraction
+        self.enable_early_stopping = enable_early_stopping
+        self.min_early_stopping_rows = 500
 
     def _build_model(self):
         if self.model_type == "baseline":
-            return create_baseline_model(**self.model_params)
+            return create_baseline_model(random_state=self.random_state, **self.model_params)
         if self.model_type == "lightgbm":
-            return create_lightgbm_model(**self.model_params)
+            return create_lightgbm_model(random_state=self.random_state, **self.model_params)
         if self.model_type == "xgboost":
-            return create_xgboost_model(**self.model_params)
+            return create_xgboost_model(random_state=self.random_state, **self.model_params)
         if self.model_type == "catboost":
-            return create_catboost_model(**self.model_params)
+            return create_catboost_model(random_state=self.random_state, **self.model_params)
         if self.model_type == "ensemble":
+            ensemble_params = dict(self.model_params)
+            weight_cfg = ensemble_params.pop("weights", None)
             base_models = [
-                create_lightgbm_model(**self.model_params.get("lightgbm", {})),
-                create_xgboost_model(**self.model_params.get("xgboost", {})),
-                create_catboost_model(**self.model_params.get("catboost", {})),
+                create_lightgbm_model(random_state=self.random_state, **ensemble_params.get("lightgbm", {})),
+                create_xgboost_model(random_state=self.random_state, **ensemble_params.get("xgboost", {})),
+                create_catboost_model(random_state=self.random_state, **ensemble_params.get("catboost", {})),
             ]
-            return AveragingEnsemble(base_models)
+            weights = self._resolve_ensemble_weights(weight_cfg, len(base_models))
+            return AveragingEnsemble(base_models, weights=weights)
         raise ValueError(f"Unknown model type: {self.model_type}")
+
+    @staticmethod
+    def _resolve_ensemble_weights(weight_cfg: Any, n_models: int) -> Optional[Sequence[float]]:
+        if weight_cfg is None:
+            return None
+        if isinstance(weight_cfg, dict):
+            ordered = [weight_cfg.get("lightgbm", 1.0), weight_cfg.get("xgboost", 1.0), weight_cfg.get("catboost", 1.0)]
+            return ordered[:n_models]
+        return weight_cfg
         
     def fit(self, X: pd.DataFrame, y: pd.Series, **kwargs):
         """训练模型"""
         
         self.feature_columns = X.columns.tolist()
-        
         self.model = self._build_model()
-        self.model.fit(X, y, **kwargs)
+
+        fit_kwargs = {**self.fit_params, **kwargs}
+        fit_X = X
+        fit_y = y
+
+        if (
+            self.enable_early_stopping
+            and self.model_type in {"lightgbm", "xgboost", "catboost"}
+            and "eval_set" not in fit_kwargs
+            and len(X) >= self.min_early_stopping_rows
+            and 0 < self.auto_validation_fraction < 0.5
+        ):
+            val_size = max(32, int(len(X) * self.auto_validation_fraction))
+            train_size = len(X) - val_size
+            if train_size > 0:
+                fit_X = X.iloc[:train_size]
+                fit_y = y.iloc[:train_size]
+                X_val = X.iloc[train_size:]
+                y_val = y.iloc[train_size:]
+                if self.model_type == "catboost":
+                    fit_kwargs.setdefault("eval_set", (X_val, y_val))
+                else:
+                    fit_kwargs.setdefault("eval_set", [(X_val, y_val)])
+                fit_kwargs.setdefault("early_stopping_rounds", 200)
+
+        self.model.fit(fit_X, fit_y, **fit_kwargs)
         
     def predict(self, X: pd.DataFrame, *, clip: bool = True) -> np.ndarray:
         """预测

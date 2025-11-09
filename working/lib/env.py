@@ -31,6 +31,8 @@ class LogPaths:
     log_jsonl: Path
     metrics_csv: Path
     submission_file: Path
+    artifacts_dir: Path
+    oof_metrics: Path
 
 
 def detect_run_environment() -> str:
@@ -66,11 +68,14 @@ def get_log_paths(env: str) -> LogPaths:
         base = Path("/kaggle/working")
     else:
         base = PROJECT_ROOT / "working"
-    
+
+    artifacts = base / "artifacts"
     return LogPaths(
         log_jsonl=base / "hull_logs.jsonl",
         metrics_csv=base / "hull_metrics.csv",
-        submission_file=base / "submission.parquet"
+        submission_file=base / "submission.parquet",
+        artifacts_dir=artifacts,
+        oof_metrics=artifacts / "oof_summary.json",
     )
 
 

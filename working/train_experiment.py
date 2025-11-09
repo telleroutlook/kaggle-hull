@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
@@ -18,9 +19,11 @@ import pandas as pd
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 
+from lib.artifacts import update_oof_artifact
 from lib.data import get_feature_columns
 from lib.evaluation import backtest_strategy
 from lib.features import FeaturePipeline
+from lib.env import detect_run_environment, get_log_paths
 from lib.model_registry import get_model_params
 from lib.models import HullModel
 from lib.strategy import (
@@ -188,6 +191,37 @@ def main() -> None:
             f"Sharpe={oof_bt['strategy_sharpe']:.4f}, "
             f"OverlaySharpe={oof_overlay_bt['strategy_sharpe']:.4f}"
         )
+
+        env = detect_run_environment()
+        log_paths = get_log_paths(env)
+        scale_values = [m.get("scale") for m in fold_metrics if m.get("scale") is not None]
+        preferred_scale = float(np.median(scale_values)) if scale_values else None
+        def _to_native(value: Any):
+            if isinstance(value, (np.floating,)):
+                return float(value)
+            if isinstance(value, (np.integer,)):
+                return int(value)
+            return value
+
+        fold_payload = [{k: _to_native(v) for k, v in entry.items()} for entry in fold_metrics]
+
+        payload = {
+            "model_type": args.model_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "n_rows": int(n_rows),
+            "n_splits": args.n_splits,
+            "feature_count": int(features.shape[1]),
+            "preferred_scale": preferred_scale,
+            "fold_metrics": fold_payload,
+            "oof_metrics": {
+                "mse": float(oof_mse),
+                "sharpe": float(oof_bt["strategy_sharpe"]),
+                "overlay_sharpe": float(oof_overlay_bt["strategy_sharpe"]),
+                "overlay_total_return": float(oof_overlay_bt["strategy_total_return"]),
+            },
+        }
+        update_oof_artifact(log_paths.oof_metrics, args.model_type, payload)
+        print(f"💾 OOF artefact saved to {log_paths.oof_metrics} (scale={preferred_scale})")
 
 
 if __name__ == "__main__":
