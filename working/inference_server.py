@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -208,7 +209,26 @@ def _ensure_model_initialized() -> None:
     data_paths = get_data_paths(env)
     log_paths = get_log_paths(env)
     train_df, training_meta = load_training_frame(data_paths, return_metadata=True)
-    pipeline = build_feature_pipeline(stateful=True)
+    
+    # 尝试从现有OOF工件中获取训练时使用的pipeline配置
+    artifact_entry, artifact_path = load_first_available_oof(
+        resolve_model_type(None), oof_artifact_candidates(log_paths)
+    )
+    
+    # 如果找到OOF工件，使用其中的pipeline配置；否则使用默认配置
+    if artifact_entry and "pipeline_config" in artifact_entry:
+        saved_config = artifact_entry["pipeline_config"]
+        print(f"🧾 Loading pipeline config from OOF artefact: {artifact_path}")
+        # 移除stateful参数，避免与默认配置冲突
+        config_for_build = {k: v for k, v in saved_config.items() if k != 'stateful'}
+        pipeline = build_feature_pipeline(
+            **config_for_build,
+            stateful=True
+        )
+    else:
+        print("⚠️ No pipeline config found in OOF artefact, using default configuration")
+        pipeline = build_feature_pipeline(stateful=True)
+    
     pipeline_config = pipeline.to_config()
     pipeline_hash = pipeline_config_hash(
         pipeline_config,
@@ -224,8 +244,47 @@ def _ensure_model_initialized() -> None:
         print(f"ℹ️ HULL_MODEL_TYPE={requested_env} -> resolved '{model_type}' for inference server")
     else:
         print(f"ℹ️ HULL_MODEL_TYPE not set; defaulting to '{model_type}' for inference server")
+    
+    # 检查环境变量中的集成策略配置
+    ensemble_config = None
+    ensemble_config_env = os.getenv("HULL_ENSEMBLE_CONFIG")
+    if ensemble_config_env:
+        try:
+            ensemble_config = json.loads(ensemble_config_env)
+            print(f"ℹ️ Loaded ensemble config from environment: {ensemble_config}")
+        except json.JSONDecodeError:
+            print(f"⚠️ Invalid HULL_ENSEMBLE_CONFIG JSON, ignoring")
+    
+    # 检查特定集成策略的环境变量
+    dynamic_weights = os.getenv("HULL_DYNAMIC_WEIGHTS", "").lower() in ("1", "true", "yes")
+    stacking_ensemble = os.getenv("HULL_STACKING_ENSEMBLE", "").lower() in ("1", "true", "yes")
+    risk_aware_ensemble = os.getenv("HULL_RISK_AWARE_ENSEMBLE", "").lower() in ("1", "true", "yes")
+    
+    # 确定最终模型类型
+    final_model_type = model_type
+    if dynamic_weights:
+        final_model_type = "dynamic_weighted_ensemble"
+    elif stacking_ensemble:
+        final_model_type = "stacking_ensemble"
+    elif risk_aware_ensemble:
+        final_model_type = "risk_aware_ensemble"
+    
+    # 构建默认集成配置
+    if ensemble_config is None and final_model_type.endswith("_ensemble"):
+        ensemble_config = {
+            'performance_window': int(os.getenv("HULL_ENSEMBLE_PERFORMANCE_WINDOW", "100")),
+            'weight_smoothing': float(os.getenv("HULL_ENSEMBLE_WEIGHT_SMOOTHING", "0.1")),
+            'cv_folds': int(os.getenv("HULL_STACKING_CV_FOLDS", "3")),
+            'risk_parity': os.getenv("HULL_RISK_PARITY", "").lower() in ("1", "true", "yes"),
+        }
+        print(f"ℹ️ Using default ensemble config: {ensemble_config}")
+    
     model_params = get_model_params(model_type)
-    model = HullModel(model_type=model_type, model_params=model_params)
+    model = HullModel(
+        model_type=final_model_type, 
+        model_params=model_params,
+        ensemble_config=ensemble_config
+    )
     model.fit(features, target)
 
     artifact_entry, artifact_path = load_first_available_oof(
@@ -262,18 +321,73 @@ def _ensure_model_initialized() -> None:
     raw_predictions = model.predict(features, clip=False)
     tuning_result: Dict[str, float] = {}
     allocation_scale: float
+    
+    # 智能scale校准：结合OOF SHARPE和当前市场条件
+    def _smart_scale_calibration(artifact_entry, stored_scale, recalibration_reasons):
+        """基于OOF SHARPE和市场条件智能调整scale"""
+        
+        # 获取OOF SHARPE
+        oof_sharpe = None
+        if artifact_entry and "oof_metrics" in artifact_entry:
+            oof_sharpe = artifact_entry["oof_metrics"].get("sharpe")
+        
+        # 如果有OOF SHARPE，基于它调整scale
+        if oof_sharpe is not None:
+            print(f"🎯 Found OOF Sharpe: {oof_sharpe:.4f}")
+            
+            # 基于OOF SHARPE的scale调整策略
+            if oof_sharpe > 0.08:  # 高sharpe，高scale
+                base_scale = stored_scale * 1.2
+                print(f"📈 High OOF Sharpe ({oof_sharpe:.4f}), increasing scale by 20%")
+            elif oof_sharpe > 0.04:  # 中等sharpe，适度调整
+                base_scale = stored_scale * 1.1
+                print(f"📊 Good OOF Sharpe ({oof_sharpe:.4f}), increasing scale by 10%")
+            elif oof_sharpe > 0.01:  # 低sharpe，小幅调整
+                base_scale = stored_scale * 1.05
+                print(f"📉 Low OOF Sharpe ({oof_sharpe:.4f}), slight scale increase")
+            else:  # 负sharpe，保守scale
+                base_scale = stored_scale * 0.9
+                print(f"📉 Negative OOF Sharpe ({oof_sharpe:.4f}), decreasing scale by 10%")
+            
+            # 基于市场波动率进一步调整
+            target_std = np.std(raw_predictions)
+            if target_std > 0:
+                # 如果当前预测变异性低，可以适当增加scale
+                if target_std < 0.001:
+                    base_scale *= 1.1
+                    print(f"📊 Low prediction variability, increasing scale by 10%")
+                # 如果当前预测变异性高，保守scale
+                elif target_std > 0.01:
+                    base_scale *= 0.95
+                    print(f"📊 High prediction variability, decreasing scale by 5%")
+            
+            # 确保scale在合理范围内
+            base_scale = max(10.0, min(60.0, base_scale))
+            return base_scale, {"oof_sharpe_based": True, "adjusted_scale": base_scale}
+        
+        return stored_scale, {"oof_sharpe_based": False}
+    
     if artifact_entry and not recalibration_reasons:
-        allocation_scale = float(stored_scale)  # type: ignore[arg-type]
+        # 使用智能校准
+        stored_scale = float(stored_scale)  # type: ignore[arg-type]
+        allocation_scale, calibration_info = _smart_scale_calibration(artifact_entry, stored_scale, recalibration_reasons)
+        
+        calibration_msg = f"OOF allocation scale {stored_scale:.2f}"
+        if calibration_info.get("oof_sharpe_based"):
+            calibration_msg += f" → smart calibrated to {allocation_scale:.2f}"
+        
         print(
-            f"♻️ Using OOF allocation scale {allocation_scale:.2f} "
+            f"♻️ {calibration_msg} "
             f"from artefact timestamp {artifact_entry.get('timestamp')}"
         )
+        tuning_result.update(calibration_info)
     else:
         if recalibration_reasons:
             print(
                 "⚖️ Recalibrating allocation scale because "
                 + "; ".join(recalibration_reasons)
             )
+        # 完整的scale优化
         tuning_result = optimize_scale_with_rolling_cv(raw_predictions, target.to_numpy())
         allocation_scale = tuning_result.get("scale", 20.0)
         if allocation_scale is None:

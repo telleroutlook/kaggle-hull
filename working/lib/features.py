@@ -1,15 +1,21 @@
-"""
-特征工程工具
+"""增强特征工程工具
+
+包含高级技术指标、统计特征、数据质量改进和特征稳定性分析
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from collections import defaultdict
+import warnings
 
 import numpy as np
 import pandas as pd
+from scipy import stats
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 
 from .data import get_feature_columns as data_get_feature_columns
 
@@ -134,6 +140,10 @@ class FeaturePipeline:
         "max_features",
         "stateful",
         "stateful_max_history",
+        "enable_data_quality",
+        "enable_feature_stability",
+        "outlier_detection",
+        "missing_value_strategy",
     )
 
     def __init__(
@@ -148,6 +158,10 @@ class FeaturePipeline:
         max_features: int = 300,
         stateful: bool = False,
         stateful_max_history: int = 256,
+        enable_data_quality: bool = True,
+        enable_feature_stability: bool = True,
+        outlier_detection: bool = True,
+        missing_value_strategy: str = "median",
     ) -> None:
         self.clip_quantile = clip_quantile
         self.missing_indicator_threshold = missing_indicator_threshold
@@ -158,6 +172,10 @@ class FeaturePipeline:
         self.max_features = max_features
         self.stateful = stateful
         self.stateful_max_history = max(1, int(stateful_max_history))
+        self.enable_data_quality = enable_data_quality
+        self.enable_feature_stability = enable_feature_stability
+        self.outlier_detection = outlier_detection
+        self.missing_value_strategy = missing_value_strategy
 
         self.feature_columns: List[str] = []
         self.numeric_columns: List[str] = []
@@ -171,6 +189,12 @@ class FeaturePipeline:
         self.selected_features: Optional[List[str]] = None
         self.feature_importance: Optional[Dict[str, float]] = None
         self._history_buffer: Optional[pd.DataFrame] = None
+        
+        # 新增的数据质量和特征稳定性属性
+        self.feature_stability_scores: Optional[Dict[str, float]] = None
+        self.outlier_bounds: Dict[str, Tuple[float, float]] = {}
+        self.data_quality_metrics: Dict[str, Any] = {}
+        self.scaler: Optional[Any] = None
 
     def fit(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> "FeaturePipeline":
         """Collect statistics needed for deterministic transforms."""
@@ -230,6 +254,18 @@ class FeaturePipeline:
                 for name, cols in groups.items()
             }
 
+        # 数据质量分析
+        if self.enable_data_quality:
+            self._analyze_data_quality(features)
+        
+        # 特征稳定性分析
+        if self.enable_feature_stability:
+            self._analyze_feature_stability(features)
+        
+        # 异常值检测和边界设置
+        if self.outlier_detection:
+            self._set_outlier_bounds(features)
+        
         # 特征选择
         if self.enable_feature_selection and self.feature_importance:
             # 根据重要性排序选择特征
@@ -265,12 +301,17 @@ class FeaturePipeline:
             series = pd.to_numeric(features[col], errors="coerce")
             # Replace inf values with NaN first
             series = series.replace([np.inf, -np.inf], np.nan)
-            fill_value = self.fill_values.get(col, 0.0)
-            series = series.fillna(fill_value)
             
-            # Get safe clip bounds
-            if self.clip_bounds.get(col):
+            # 智能缺失值填充
+            series = self._smart_fill_missing(series, col)
+            
+            # 异常值处理
+            if self.outlier_detection and col in self.outlier_bounds:
+                lower, upper = self.outlier_bounds[col]
+                series = series.clip(lower=lower, upper=upper)
+            elif self.clip_bounds.get(col):
                 lower, upper = self.clip_bounds[col]
+                series = series.clip(lower=lower, upper=upper)
             else:
                 # Use safe bounds that exclude inf values
                 valid_series = series[np.isfinite(series)] if len(series[np.isfinite(series)]) > 0 else series
@@ -278,8 +319,8 @@ class FeaturePipeline:
                     lower, upper = valid_series.min(), valid_series.max()
                 else:
                     lower, upper = -10.0, 10.0
+                series = series.clip(lower=lower, upper=upper)
             
-            series = series.clip(lower=lower, upper=upper)
             if self.standardize:
                 mean, std = self.standardization_stats.get(col, (0.0, 1.0))
                 series = (series - mean) / (std if std > 0 else 1.0)
@@ -360,6 +401,12 @@ class FeaturePipeline:
         # 4. 技术指标增强
         enhanced_frames.extend(self._add_technical_indicators(original_df, features))
         
+        # 5. 分层统计特征
+        enhanced_frames.extend(self._add_tiered_statistics(original_df, features))
+        
+        # 6. 宏观因子交互
+        enhanced_frames.extend(self._add_macro_factor_interactions(original_df, features))
+        
         # 5. 交叉特征
         enhanced_frames.extend(self._add_cross_features(features))
         
@@ -370,56 +417,124 @@ class FeaturePipeline:
         return features
 
     def _add_technical_indicators(self, original_df: pd.DataFrame, features: pd.DataFrame) -> List[pd.DataFrame]:
-        """添加技术指标特征"""
+        """添加高级技术指标特征"""
         
         tech_indicators = []
         
-        # RSI (Relative Strength Index)
+        # RSI (Relative Strength Index) with multiple periods
         if 'P1' in original_df.columns:
             price = original_df['P1']
-            delta = price.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            tech_indicators.append(rsi.fillna(50).astype(self.dtype).to_frame('rsi_14'))
+            for period in [7, 14, 21]:
+                delta = price.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+                rs = gain / loss
+                rsi = 100 - (100 / (1 + rs))
+                tech_indicators.append(rsi.fillna(50).astype(self.dtype).to_frame(f'rsi_{period}'))
         
-        # MACD (Moving Average Convergence Divergence)
+        # Williams %R
         if 'P1' in original_df.columns:
             price = original_df['P1']
-            exp1 = price.ewm(span=12).mean()
-            exp2 = price.ewm(span=26).mean()
-            macd = exp1 - exp2
-            signal = macd.ewm(span=9).mean()
-            histogram = macd - signal
-            tech_indicators.append(macd.fillna(0).astype(self.dtype).to_frame('macd_line'))
-            tech_indicators.append(signal.fillna(0).astype(self.dtype).to_frame('macd_signal'))
-            tech_indicators.append(histogram.fillna(0).astype(self.dtype).to_frame('macd_histogram'))
+            for period in [14, 21]:
+                high = price.rolling(window=period).max()
+                low = price.rolling(window=period).min()
+                williams_r = -100 * ((high - price) / (high - low + 1e-8))
+                tech_indicators.append(williams_r.fillna(-50).astype(self.dtype).to_frame(f'williams_r_{period}'))
         
-        # 移动平均交叉
+        # Stochastic Oscillator
         if 'P1' in original_df.columns:
             price = original_df['P1']
-            ma_5 = price.rolling(5).mean()
-            ma_20 = price.rolling(20).mean()
-            ma_cross = ma_5 / ma_20
-            tech_indicators.append(ma_cross.fillna(1).astype(self.dtype).to_frame('ma_cross_ratio'))
+            for period in [14, 21]:
+                high = price.rolling(window=period).max()
+                low = price.rolling(window=period).min()
+                k_percent = 100 * ((price - low) / (high - low + 1e-8))
+                k_percent_ma = k_percent.rolling(window=3).mean()
+                d_percent = k_percent_ma.rolling(window=3).mean()
+                tech_indicators.append(k_percent.fillna(50).astype(self.dtype).to_frame(f'stoch_k_{period}'))
+                tech_indicators.append(d_percent.fillna(50).astype(self.dtype).to_frame(f'stoch_d_{period}'))
         
-        # 布林带
+        # ADX (Average Directional Index)
         if 'P1' in original_df.columns:
             price = original_df['P1']
-            ma_20 = price.rolling(20).mean()
-            std_20 = price.rolling(20).std()
-            bb_upper = ma_20 + (2 * std_20)
-            bb_lower = ma_20 - (2 * std_20)
-            bb_position = (price - bb_lower) / (bb_upper - bb_lower)
-            bb_width = (bb_upper - bb_lower) / ma_20
-            tech_indicators.append(bb_position.fillna(0.5).astype(self.dtype).to_frame('bollinger_position'))
-            tech_indicators.append(bb_width.fillna(0.1).astype(self.dtype).to_frame('bollinger_width'))
+            high = price.rolling(window=14).max()
+            low = price.rolling(window=14).min()
+            
+            # True Range calculation
+            prev_close = price.shift(1)
+            tr1 = high - low
+            tr2 = abs(high - prev_close)
+            tr3 = abs(low - prev_close)
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            # Directional Movement
+            up_move = price - price.shift(1)
+            down_move = price.shift(1) - price
+            
+            plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0)
+            minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0)
+            
+            # Smooth the indicators
+            atr = tr.rolling(window=14).mean()
+            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
+            minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr)
+            
+            # ADX calculation
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-8)
+            adx = dx.rolling(window=14).mean()
+            
+            tech_indicators.append(plus_di.fillna(0).astype(self.dtype).to_frame('adx_plus_di'))
+            tech_indicators.append(minus_di.fillna(0).astype(self.dtype).to_frame('adx_minus_di'))
+            tech_indicators.append(adx.fillna(0).astype(self.dtype).to_frame('adx_value'))
+        
+        # MACD (Moving Average Convergence Divergence) with multiple periods
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            for (fast, slow, signal) in [(12, 26, 9), (5, 35, 5)]:
+                exp1 = price.ewm(span=fast).mean()
+                exp2 = price.ewm(span=slow).mean()
+                macd = exp1 - exp2
+                signal_line = macd.ewm(span=signal).mean()
+                histogram = macd - signal_line
+                tech_indicators.append(macd.fillna(0).astype(self.dtype).to_frame(f'macd_{fast}_{slow}'))
+                tech_indicators.append(signal_line.fillna(0).astype(self.dtype).to_frame(f'macd_signal_{fast}_{slow}'))
+                tech_indicators.append(histogram.fillna(0).astype(self.dtype).to_frame(f'macd_hist_{fast}_{slow}'))
+        
+        # 移动平均交叉 (多时间框架)
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            ma_pairs = [(5, 10), (5, 20), (10, 20), (20, 50)]
+            for short, long in ma_pairs:
+                ma_short = price.rolling(short).mean()
+                ma_long = price.rolling(long).mean()
+                ma_cross = ma_short / ma_long
+                tech_indicators.append(ma_cross.fillna(1).astype(self.dtype).to_frame(f'ma_cross_{short}_{long}'))
+        
+        # 布林带增强版
+        if 'P1' in original_df.columns:
+            price = original_df['P1']
+            for period in [20, 50]:
+                ma = price.rolling(period).mean()
+                std = price.rolling(period).std()
+                bb_upper = ma + (2 * std)
+                bb_lower = ma - (2 * std)
+                bb_width = (bb_upper - bb_lower) / ma
+                bb_squeeze = (std / ma) / (price.rolling(50).std() / price.rolling(50).mean())
+                
+                tech_indicators.append(bb_width.fillna(0.1).astype(self.dtype).to_frame(f'bollinger_width_{period}'))
+                tech_indicators.append(bb_squeeze.fillna(1).astype(self.dtype).to_frame(f'bollinger_squeeze_{period}'))
+        
+        # 波动率指标
+        if 'V1' in original_df.columns:
+            vol = original_df['V1']
+            for period in [10, 20]:
+                vol_mean = vol.rolling(period).mean()
+                vol_ratio = vol / vol_mean
+                tech_indicators.append(vol_ratio.fillna(1).astype(self.dtype).to_frame(f'vol_ratio_{period}'))
         
         return tech_indicators
 
     def _add_cross_features(self, features: pd.DataFrame) -> List[pd.DataFrame]:
-        """添加特征交叉项"""
+        """添加特征交叉项和高级组合特征"""
         
         cross_features = []
         
@@ -431,6 +546,9 @@ class FeaturePipeline:
             ('MOM1', 'M1', 'momentum_market_interaction'),
             ('V1', 'P1', 'vol_price_interaction'),
             ('MOM1', 'V1', 'momentum_vol_interaction'),
+            ('E1', 'V1', 'economic_vol_interaction'),
+            ('S1', 'P1', 'sentiment_price_interaction'),
+            ('I1', 'M1', 'interest_market_interaction'),
         ]
         
         for col1, col2, name in important_crosses:
@@ -445,6 +563,7 @@ class FeaturePipeline:
             ('M1', 'M2', 'market_ratio'),
             ('E1', 'E2', 'economic_ratio'),
             ('MOM1', 'MOM2', 'momentum_ratio'),
+            ('S1', 'S2', 'sentiment_ratio'),
         ]
         
         for col1, col2, name in ratio_features:
@@ -453,6 +572,17 @@ class FeaturePipeline:
                 ratio = ratio.replace([np.inf, -np.inf], 0).fillna(1)
                 cross_features.append(ratio.astype(self.dtype).to_frame(name))
         
+        # 高级交叉特征
+        if all(col in features.columns for col in ['M1', 'V1', 'MOM1']):
+            # 三元交叉特征
+            ternary_cross = features['M1'] * features['V1'] * features['MOM1']
+            cross_features.append(ternary_cross.fillna(0).astype(self.dtype).to_frame('ternary_market_vol_mom'))
+        
+        if all(col in features.columns for col in ['E1', 'I1', 'P1']):
+            # 宏观-利率-价格交互
+            macro_interaction = features['E1'] * features['I1'] * features['P1']
+            cross_features.append(macro_interaction.fillna(0).astype(self.dtype).to_frame('macro_interest_price_interaction'))
+        
         # 统计特征交叉
         if 'M1' in features.columns and 'V1' in features.columns:
             # 市场特征与波动率的标准化交叉
@@ -460,6 +590,87 @@ class FeaturePipeline:
             cross_features.append(norm_cross.fillna(0).astype(self.dtype).to_frame('norm_market_vol_cross'))
         
         return cross_features
+
+    def _add_tiered_statistics(self, original_df: pd.DataFrame, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """添加分层统计特征 - 根据市场状态分层的统计特征"""
+        
+        tiered_stats = []
+        
+        # 定义市场状态基于波动率和趋势
+        if 'V1' in features.columns and 'M1' in original_df.columns:
+            # 波动率状态
+            vol_percentile = features['V1'].rolling(50, min_periods=20).rank(pct=True)
+            low_vol = vol_percentile < 0.25
+            high_vol = vol_percentile > 0.75
+            
+            # 趋势状态 (基于价格动量)
+            if 'P1' in original_df.columns:
+                price_change = original_df['P1'].pct_change()
+                trend_strength = price_change.rolling(20, min_periods=10).std()
+                strong_trend = trend_strength > trend_strength.rolling(50, min_periods=20).quantile(0.75)
+            else:
+                strong_trend = pd.Series(False, index=features.index)
+            
+            # 分层统计：按波动率和趋势组合
+            for condition_name, condition in [
+                ('low_vol', low_vol),
+                ('high_vol', high_vol), 
+                ('strong_trend', strong_trend),
+                ('normal', ~(low_vol | high_vol | strong_trend))
+            ]:
+                if condition.sum() < 10:  # 确保有足够的样本
+                    continue
+                    
+                # 分层均值和标准差
+                grouped_mean = features.where(condition).rolling(5, min_periods=1).mean()
+                grouped_std = features.where(condition).rolling(5, min_periods=1).std()
+                
+                # 只为数值特征计算
+                numeric_features = features.select_dtypes(include=[np.number]).columns
+                for col in numeric_features[:20]:  # 限制特征数量
+                    if col in grouped_mean.columns:
+                        tiered_stats.append(
+                            grouped_mean[col].fillna(features[col].mean()).astype(self.dtype).to_frame(f'{col}_mean_{condition_name}')
+                        )
+                        tiered_stats.append(
+                            grouped_std[col].fillna(features[col].std()).astype(self.dtype).to_frame(f'{col}_std_{condition_name}')
+                        )
+        
+        return tiered_stats
+
+    def _add_macro_factor_interactions(self, original_df: pd.DataFrame, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """添加宏观因子交互特征"""
+        
+        macro_interactions = []
+        
+        # 利率-市场交互
+        if all(col in features.columns for col in ['I1', 'M1', 'M2']):
+            # 利率调整的市场相关性
+            rate_adjusted_market = features['M1'] * (1 + features['I1'])
+            macro_interactions.append(rate_adjusted_market.fillna(0).astype(self.dtype).to_frame('rate_adjusted_market'))
+        
+        # 波动率-动量交互
+        if all(col in features.columns for col in ['V1', 'MOM1', 'MOM2']):
+            # 波动率加权的动量
+            vol_weighted_momentum = features['MOM1'] / (features['V1'] + 1e-8)
+            macro_interactions.append(vol_weighted_momentum.fillna(0).astype(self.dtype).to_frame('vol_weighted_momentum'))
+        
+        # 情绪-价格交互
+        if all(col in features.columns for col in ['S1', 'P1', 'P2']):
+            # 情绪调整的价格变化
+            sentiment_price_interaction = features['S1'] * original_df['P1'].pct_change()
+            macro_interactions.append(sentiment_price_interaction.fillna(0).astype(self.dtype).to_frame('sentiment_price_change'))
+        
+        # 宏观经济因子复合交互
+        if all(col in features.columns for col in ['E1', 'E2', 'E3']):
+            # 宏观经济强度指标
+            econ_strength = (features['E1'] + features['E2'] + features['E3']) / 3
+            # 宏观经济风险指标
+            econ_risk = features['E1'].abs() + features['E2'].abs() + features['E3'].abs()
+            macro_interactions.append(econ_strength.fillna(0).astype(self.dtype).to_frame('economic_strength'))
+            macro_interactions.append(econ_risk.fillna(0).astype(self.dtype).to_frame('economic_risk'))
+        
+        return macro_interactions
 
     def _add_lagged_interactions(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
         """添加滞后特征的高级交互"""
@@ -492,6 +703,170 @@ class FeaturePipeline:
         
         return features
 
+    def _analyze_data_quality(self, features: pd.DataFrame) -> None:
+        """分析数据质量指标"""
+        
+        quality_metrics = {}
+        
+        for col in self.numeric_columns:
+            if col not in features.columns:
+                continue
+                
+            series = features[col]
+            
+            # 基本统计
+            quality_metrics[col] = {
+                'missing_rate': series.isnull().mean(),
+                'zero_rate': (series == 0).mean(),
+                'unique_count': series.nunique(),
+                'duplicates': series.duplicated().sum(),
+                'skewness': float(series.skew()) if series.notnull().any() else 0.0,
+                'kurtosis': float(series.kurtosis()) if series.notnull().any() else 0.0,
+            }
+            
+            # 变异性指标
+            if series.notnull().sum() > 1:
+                cv = series.std() / abs(series.mean()) if series.mean() != 0 else np.inf
+                quality_metrics[col]['coefficient_of_variation'] = cv if np.isfinite(cv) else 0.0
+        
+        self.data_quality_metrics = quality_metrics
+
+    def _analyze_feature_stability(self, features: pd.DataFrame) -> None:
+        """分析特征稳定性"""
+        
+        stability_scores = {}
+        
+        for col in self.numeric_columns:
+            if col not in features.columns:
+                continue
+                
+            series = features[col]
+            
+            if series.notnull().sum() < 10:
+                stability_scores[col] = 0.0
+                continue
+            
+            # 滚动窗口稳定性分析
+            windows = [5, 10, 20]
+            stability_measures = []
+            
+            for window in windows:
+                if len(series) >= window:
+                    rolling_corr = []
+                    for i in range(window, len(series)):
+                        slice1 = series.iloc[i-window:i]
+                        slice2 = series.iloc[i-window//2:i]
+                        if len(slice1) == len(slice2) and slice1.notnull().all() and slice2.notnull().all():
+                            corr = slice1.corr(slice2)
+                            if not pd.isna(corr):
+                                rolling_corr.append(abs(corr))
+                    
+                    if rolling_corr:
+                        stability_measures.append(np.mean(rolling_corr))
+            
+            # 总体稳定性得分
+            if stability_measures:
+                stability_scores[col] = np.mean(stability_measures)
+            else:
+                stability_scores[col] = 0.0
+        
+        self.feature_stability_scores = stability_scores
+
+    def _set_outlier_bounds(self, features: pd.DataFrame) -> None:
+        """设置异常值边界"""
+        
+        for col in self.numeric_columns:
+            if col not in features.columns:
+                continue
+                
+            series = features[col].dropna()
+            
+            if len(series) < 10:
+                continue
+            
+            # 使用IQR方法检测异常值
+            Q1 = series.quantile(0.25)
+            Q3 = series.quantile(0.75)
+            IQR = Q3 - Q1
+            
+            # 扩展IQR边界
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            # 使用Z-score作为补充
+            z_scores = np.abs(stats.zscore(series))
+            z_outliers = series[z_scores > 3]
+            
+            if len(z_outliers) > 0:
+                # 结合IQR和Z-score边界
+                z_lower = series.quantile(0.01)
+                z_upper = series.quantile(0.99)
+                lower_bound = min(lower_bound, z_lower)
+                upper_bound = max(upper_bound, z_upper)
+            
+            # 确保边界合理
+            if np.isfinite(lower_bound) and np.isfinite(upper_bound) and lower_bound < upper_bound:
+                self.outlier_bounds[col] = (float(lower_bound), float(upper_bound))
+
+    def _smart_fill_missing(self, series: pd.Series, col_name: str) -> pd.Series:
+        """智能缺失值填充"""
+        
+        if series.isnull().sum() == 0:
+            return series
+        
+        strategy = self.missing_value_strategy
+        
+        if strategy == "median":
+            fill_value = self.fill_values.get(col_name, series.median())
+            return series.fillna(fill_value)
+        elif strategy == "mean":
+            fill_value = series.mean()
+            return series.fillna(fill_value if np.isfinite(fill_value) else 0.0)
+        elif strategy == "mode":
+            fill_value = series.mode()
+            return series.fillna(fill_value.iloc[0] if len(fill_value) > 0 else 0.0)
+        elif strategy == "ffill":
+            return series.fillna(method='ffill')
+        elif strategy == "bfill":
+            return series.fillna(method='bfill')
+        else:
+            # 智能填充：结合中位数和前向填充
+            median_fill = self.fill_values.get(col_name, series.median())
+            series = series.fillna(median_fill)
+            # 对于仍为NaN的值，使用前向填充
+            return series.fillna(method='ffill').fillna(0.0)
+
+    def get_data_quality_report(self) -> Dict[str, Any]:
+        """获取数据质量报告"""
+        return {
+            'quality_metrics': self.data_quality_metrics,
+            'stability_scores': self.feature_stability_scores,
+            'outlier_bounds': self.outlier_bounds,
+            'config': self.to_config()
+        }
+
+    def get_stable_features(self, threshold: float = 0.3) -> List[str]:
+        """获取稳定特征列表"""
+        if not self.feature_stability_scores:
+            return []
+        
+        stable_features = [
+            col for col, score in self.feature_stability_scores.items()
+            if score >= threshold
+        ]
+        return stable_features
+
+    def get_risky_features(self, threshold: float = 0.1) -> List[str]:
+        """获取不稳定特征列表"""
+        if not self.feature_stability_scores:
+            return []
+        
+        risky_features = [
+            col for col, score in self.feature_stability_scores.items()
+            if score < threshold
+        ]
+        return risky_features
+
     def fit_transform(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> pd.DataFrame:
         return self.fit(df, feature_cols).transform(df)
 
@@ -520,6 +895,10 @@ class FeaturePipeline:
             "max_features": 300,
             "stateful": False,
             "stateful_max_history": 256,
+            "enable_data_quality": True,
+            "enable_feature_stability": True,
+            "outlier_detection": True,
+            "missing_value_strategy": "median",
         }
 
     def to_config(self) -> Dict[str, Any]:

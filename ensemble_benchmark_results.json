@@ -1,0 +1,193 @@
+[
+  {
+    "strategy_name": "\u57fa\u7ebf\u96c6\u6210 (\u5747\u5300\u6743\u91cd)",
+    "model_type": "ensemble",
+    "config": {
+      "base_type": "ensemble",
+      "weights": {
+        "lightgbm": 1.0,
+        "xgboost": 1.0,
+        "catboost": 1.0
+      }
+    },
+    "run_times": [
+      8.181114435195923,
+      7.955499172210693
+    ],
+    "prediction_stability": [
+      0.13915039413812896,
+      0.13915039413812896
+    ],
+    "sharpe_ratios": [
+      -0.07900976372269604,
+      -0.07900976372269604
+    ],
+    "volatility": [
+      0.02711315762488317,
+      0.02711315762488317
+    ],
+    "max_drawdown": [
+      -0.5827863925986417,
+      -0.5827863925986417
+    ],
+    "avg_runtime": 8.068306803703308,
+    "std_runtime": 0.11280763149261475,
+    "avg_prediction_stability": 0.13915039413812896,
+    "avg_sharpe": -0.07900976372269604,
+    "avg_volatility": 0.02711315762488317,
+    "avg_max_drawdown": -0.5827863925986417
+  },
+  {
+    "strategy_name": "\u52a8\u6001\u6743\u91cd\u96c6\u6210",
+    "model_type": "custom",
+    "config": {
+      "base_type": "dynamic_weighted_ensemble",
+      "performance_window": 100,
+      "conditional_weighting": true,
+      "weight_smoothing": 0.1
+    },
+    "run_times": [
+      7.869165420532227,
+      7.863148212432861
+    ],
+    "prediction_stability": [
+      0.13915039413812896,
+      0.13915039413812896
+    ],
+    "sharpe_ratios": [
+      -0.07900976372269604,
+      -0.07900976372269604
+    ],
+    "volatility": [
+      0.02711315762488317,
+      0.02711315762488317
+    ],
+    "max_drawdown": [
+      -0.5827863925986417,
+      -0.5827863925986417
+    ],
+    "avg_runtime": 7.866156816482544,
+    "std_runtime": 0.003008604049682617,
+    "avg_prediction_stability": 0.13915039413812896,
+    "avg_sharpe": -0.07900976372269604,
+    "avg_volatility": 0.02711315762488317,
+    "avg_max_drawdown": -0.5827863925986417
+  },
+  {
+    "strategy_name": "Stacking\u96c6\u6210",
+    "model_type": "custom",
+    "config": {
+      "base_type": "stacking_ensemble",
+      "cv_folds": 3,
+      "use_features_in_secondary": false
+    },
+    "run_times": [
+      27.33657479286194,
+      27.659557580947876
+    ],
+    "prediction_stability": [
+      0.1556062466431251,
+      0.1556062466431251
+    ],
+    "sharpe_ratios": [
+      -0.07820118896281217,
+      -0.07820118896281217
+    ],
+    "volatility": [
+      0.029251572150416936,
+      0.029251572150416936
+    ],
+    "max_drawdown": [
+      -0.6092203358053009,
+      -0.6092203358053009
+    ],
+    "avg_runtime": 27.498066186904907,
+    "std_runtime": 0.16149139404296875,
+    "avg_prediction_stability": 0.1556062466431251,
+    "avg_sharpe": -0.07820118896281217,
+    "avg_volatility": 0.029251572150416936,
+    "avg_max_drawdown": -0.6092203358053009
+  },
+  {
+    "strategy_name": "\u98ce\u9669\u611f\u77e5\u96c6\u6210",
+    "model_type": "custom",
+    "config": {
+      "base_type": "risk_aware_ensemble",
+      "volatility_constraint": 1.2,
+      "uncertainty_threshold": 0.1,
+      "risk_parity": true
+    },
+    "run_times": [
+      8.106543779373169,
+      7.990051984786987
+    ],
+    "prediction_stability": [
+      0.13914295157805462,
+      0.13912775433179497
+    ],
+    "sharpe_ratios": [
+      -0.07888997823164876,
+      -0.07888969908348797
+    ],
+    "volatility": [
+      0.027109630546501104,
+      0.027102662045098033
+    ],
+    "max_drawdown": [
+      -0.5824887515456247,
+      -0.5824409307226012
+    ],
+    "avg_runtime": 8.048297882080078,
+    "std_runtime": 0.05824589729309082,
+    "avg_prediction_stability": 0.1391353529549248,
+    "avg_sharpe": -0.07888983865756836,
+    "avg_volatility": 0.02710614629579957,
+    "avg_max_drawdown": -0.5824648411341129
+  },
+  {
+    "strategy_name": "LightGBM (\u57fa\u7ebf)",
+    "model_type": "lightgbm",
+    "config": {},
+    "run_times": [
+      0.7245426177978516,
+      0.7106752395629883
+    ],
+    "prediction_stability": [
+      0.13870019484225007,
+      0.13870019484225007
+    ],
+    "sharpe_ratios": [
+      -0.07147832207160684,
+      -0.07147832207160684
+    ],
+    "volatility": [
+      0.027918718191231547,
+      0.027918718191231547
+    ],
+    "max_drawdown": [
+      -0.5496532305206822,
+      -0.5496532305206822
+    ],
+    "avg_runtime": 0.7176089286804199,
+    "std_runtime": 0.006933689117431641,
+    "avg_prediction_stability": 0.13870019484225007,
+    "avg_sharpe": -0.07147832207160684,
+    "avg_volatility": 0.027918718191231547,
+    "avg_max_drawdown": -0.5496532305206822
+  },
+  {
+    "strategy_name": "XGBoost (\u57fa\u7ebf)",
+    "model_type": "xgboost",
+    "config": {},
+    "run_times": [],
+    "prediction_stability": [],
+    "sharpe_ratios": [],
+    "volatility": [],
+    "max_drawdown": [],
+    "avg_runtime": Infinity,
+    "avg_prediction_stability": Infinity,
+    "avg_sharpe": -Infinity,
+    "avg_volatility": Infinity,
+    "avg_max_drawdown": -1.0
+  }
+]

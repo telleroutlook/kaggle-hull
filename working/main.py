@@ -7,6 +7,7 @@ Kaggle竞赛的模型入口点
 import argparse
 import sys
 import os
+import json
 import pandas as pd
 from pathlib import Path
 from typing import Optional
@@ -130,6 +131,59 @@ def parse_args(argv=None):
         help="Overlay自适应目标波动率分位数 (0-1)",
     )
     
+    # 高级集成策略参数
+    parser.add_argument(
+        "--ensemble-config",
+        type=str,
+        default=None,
+        help="高级集成策略配置JSON字符串，如: '{\"performance_window\":100,\"conditional_weighting\":true}'"
+    )
+    
+    parser.add_argument(
+        "--dynamic-weights",
+        action="store_true",
+        help="启用动态权重集成"
+    )
+    
+    parser.add_argument(
+        "--stacking-ensemble",
+        action="store_true",
+        help="启用Stacking集成"
+    )
+    
+    parser.add_argument(
+        "--risk-aware-ensemble",
+        action="store_true",
+        help="启用风险感知集成"
+    )
+    
+    parser.add_argument(
+        "--ensemble-performance-window",
+        type=int,
+        default=100,
+        help="动态权重集成性能监控窗口大小"
+    )
+    
+    parser.add_argument(
+        "--ensemble-weight-smoothing",
+        type=float,
+        default=0.1,
+        help="动态权重平滑系数 (0-1)"
+    )
+    
+    parser.add_argument(
+        "--stacking-cv-folds",
+        type=int,
+        default=3,
+        help="Stacking集成的交叉验证折叠数"
+    )
+    
+    parser.add_argument(
+        "--risk-parity",
+        action="store_true",
+        help="启用风险平价权重"
+    )
+    
     # 处理不同的运行环境参数
     if argv is None:
         # 过滤掉Jupyter内核参数和不相关的参数
@@ -224,8 +278,42 @@ def main():
             )
         else:
             logger.info("Model type explicitly requested: %s", args.model_type)
+        
+        # 确定最终模型类型和配置
+        final_model_type = model_type
+        ensemble_config = None
+        
+        # 高级集成策略处理
+        if args.dynamic_weights or args.stacking_ensemble or args.risk_aware_ensemble:
+            if args.dynamic_weights:
+                final_model_type = "dynamic_weighted_ensemble"
+            elif args.stacking_ensemble:
+                final_model_type = "stacking_ensemble"
+            elif args.risk_aware_ensemble:
+                final_model_type = "risk_aware_ensemble"
+            
+            # 构建集成配置
+            ensemble_config = {}
+            if args.ensemble_config:
+                try:
+                    ensemble_config = json.loads(args.ensemble_config)
+                except json.JSONDecodeError:
+                    logger.warning("无效的ensemble-config JSON，忽略")
+            
+            # 添加命令行参数到配置
+            ensemble_config.update({
+                'performance_window': args.ensemble_performance_window,
+                'weight_smoothing': args.ensemble_weight_smoothing,
+                'cv_folds': args.stacking_cv_folds,
+                'risk_parity': args.risk_parity,
+            })
+        
         model_params = get_model_params(model_type)
-        model = HullModel(model_type=model_type, model_params=model_params)
+        model = HullModel(
+            model_type=final_model_type, 
+            model_params=model_params,
+            ensemble_config=ensemble_config
+        )
 
         oof_entry, oof_path = load_first_available_oof(
             model_type, oof_artifact_candidates(log_paths)

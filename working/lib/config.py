@@ -53,7 +53,11 @@ class ConfigManager:
         self.config['features'] = {
             'max_features': '20',
             'rolling_windows': '[5, 10, 20]',
-            'lag_periods': '[1, 2, 3]'
+            'lag_periods': '[1, 2, 3]',
+            'enable_data_quality': 'True',
+            'enable_feature_stability': 'True',
+            'outlier_detection': 'True',
+            'missing_value_strategy': 'median'
         }
         
         self.config['data'] = {
@@ -85,7 +89,11 @@ class ConfigManager:
         return {
             'max_features': self.config.getint('features', 'max_features', fallback=20),
             'rolling_windows': eval(self.config.get('features', 'rolling_windows', fallback='[5, 10, 20]')),
-            'lag_periods': eval(self.config.get('features', 'lag_periods', fallback='[1, 2, 3]'))
+            'lag_periods': eval(self.config.get('features', 'lag_periods', fallback='[1, 2, 3]')),
+            'enable_data_quality': self.config.getboolean('features', 'enable_data_quality', fallback=True),
+            'enable_feature_stability': self.config.getboolean('features', 'enable_feature_stability', fallback=True),
+            'outlier_detection': self.config.getboolean('features', 'outlier_detection', fallback=True),
+            'missing_value_strategy': self.config.get('features', 'missing_value_strategy', fallback='median')
         }
     
     def get_data_config(self) -> Dict[str, Any]:
