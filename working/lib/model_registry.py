@@ -11,13 +11,18 @@ DEFAULT_MODEL_TYPE = os.getenv("HULL_MODEL_TYPE", "lightgbm").lower()
 
 MODEL_PRESETS: Dict[str, Any] = {
     "lightgbm": {
-        "n_estimators": 2500,
-        "learning_rate": 0.01,
-        "num_leaves": 192,
-        "subsample": 0.85,
-        "colsample_bytree": 0.75,
-        "reg_lambda": 3.0,
-        "min_child_samples": 45,
+        "n_estimators": 1500,
+        "learning_rate": 0.015,
+        "num_leaves": 96,
+        "max_depth": 12,
+        "subsample": 0.8,
+        "colsample_bytree": 0.85,
+        "reg_lambda": 5.0,
+        "min_child_samples": 30,
+        "feature_fraction": 0.9,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 1,
+        "early_stopping_rounds": 100,
     },
     "xgboost": {
         "n_estimators": 2000,
