@@ -372,9 +372,17 @@ class FeaturePipeline:
                     # 使用RobustScaler或QuantileTransformer
                     try:
                         if hasattr(self.scaler, 'transform'):
-                            series_values = series.values.reshape(-1, 1)
-                            scaled_values = self.scaler.transform(series_values)
-                            series = pd.Series(scaled_values.flatten(), index=series.index)
+                            # 保持DataFrame格式以保留特征名称，避免QuantileTransformer警告
+                            if isinstance(self.scaler, QuantileTransformer):
+                                # 对于QuantileTransformer，使用DataFrame保持特征名称
+                                series_df = pd.DataFrame({col: series.values})
+                                scaled_values = self.scaler.transform(series_df)
+                                series = pd.Series(scaled_values.flatten(), index=series.index, name=col)
+                            else:
+                                # 对于其他scaler，可以安全地使用numpy数组
+                                series_values = series.values.reshape(-1, 1)
+                                scaled_values = self.scaler.transform(series_values)
+                                series = pd.Series(scaled_values.flatten(), index=series.index)
                         else:
                             mean, std = self.standardization_stats.get(col, (0.0, 1.0))
                             series = (series - mean) / (std if std > 0 else 1.0)
