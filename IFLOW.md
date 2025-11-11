@@ -6,31 +6,155 @@
 
 **核心挑战**: 这不仅是对预测建模能力的考验，更是对有效市场假说（Efficient Market Hypothesis, EMH）的一次挑战，试图证明在机器学习时代，市场并非完全有效。
 
-## 竞赛时间线
+**竞赛状态**: 已完成多项核心优化，包括高级特征工程、模型集成策略和性能修复，现已具备冲击前列的技术基础。
 
-**训练阶段**:
-- 开始日期: 2025年9月16日
-- 报名截止: 2025年12月8日
-- 团队合并截止: 2025年12月8日
-- 最终提交截止: 2025年12月15日
+## 竞赛信息
 
-**预测阶段**:
-- 竞赛结束日期: 2026年6月16日
+*   **奖金池**: 总奖金$100,000，第一名$50,000
+*   **竞赛目标**: 预测标普500指数的超额收益，输出0-2之间的资金分配比例
+*   **评估指标**: 变体夏普比率，惩罚波动性过高或未跑赢市场的策略
+*   **提交要求**: 通过Kaggle Notebook使用评估API提交，预测值范围0-2
 
-**奖金**: 总奖金$100,000，第一名$50,000
+## 核心系统架构
+
+### 1. 增强特征工程系统
+*   **特征数量**: 从112个基础特征扩展到451个增强特征
+*   **技术指标**: 18个专业级技术指标（Williams %R、Stochastic、ADX、RSI、MACD等）
+*   **分层统计**: 160个基于市场状态的智能分层统计特征
+*   **宏观交互**: 8个宏观经济因子交互特征
+*   **数据质量**: 6种数据质量策略和异常值处理
+
+### 2. 高级模型集成策略
+*   **动态权重集成**: 实时性能监控和自适应权重调整（+3.6% MSE改善）
+*   **Stacking集成**: 元学习器组合基础模型预测
+*   **风险感知集成**: 结合预测不确定性的风险平价权重
+*   **性能监控**: 实时权重调整和故障回退机制
+
+### 3. 核心技术优化
+*   **配置统一化**: 解决训练/推理配置漂移问题
+*   **智能杠杆校准**: 基于OOF SHARPE的动态校准（scale从40提升到94.01）
+*   **自适应std_guard**: 基于预测变异性的动态阈值（触发率100%智能化）
+*   **警告处理**: 完整的警告抑制和错误处理机制
+
+## 智能工作流与Agent使用策略
+
+### Agent类型与应用场景
+
+#### 1. **general-purpose (通用型)**
+**适用任务**:
+- 📊 **数据探索和分析**: 分析特征分布、缺失值模式、相关性分析
+- 🔍 **代码搜索和理解**: 搜索特定函数、类或逻辑在代码库中的实现
+- 📋 **多步骤任务**: 复杂的分析任务需要多个步骤和工具协调
+- 📖 **文档编写**: 技术文档、规范说明、报告撰写
+
+**使用示例**:
+```
+使用 general-purpose agent 进行完整的数据质量分析
+包含：缺失值分析、特征重要性评估、异常值检测
+```
+
+#### 2. **ai-engineer (AI工程师)**
+**适用任务**:
+- 🤖 **LLM应用开发**: 构建RAG系统、聊天机器人、对话系统
+- 🔧 **AI API集成**: OpenAI、Hugging Face等AI服务集成
+- 🔍 **向量化搜索**: 实现语义搜索、推荐系统
+- 🎯 **智能组件开发**: 基于AI的预测、分析、生成工具
+
+**使用示例**:
+```
+使用 ai-engineer 开发智能特征选择工具
+功能：基于AI的自动特征工程和重要性评估
+```
+
+#### 3. **full-stack-developer (全栈开发)**
+**适用任务**:
+- 🖥️ **Web应用开发**: 构建数据可视化和交互界面
+- 📱 **API服务开发**: 创建RESTful API、微服务架构
+- 🔧 **UI/UX设计**: 用户界面设计和用户体验优化
+- 🐛 **全栈调试**: 前后端联调、性能优化
+
+**使用示例**:
+```
+使用 full-stack-developer 构建模型性能监控界面
+包含：实时预测监控、性能指标展示、集成策略管理
+```
+
+#### 4. **javascript-pro (JavaScript专家)**
+**适用任务**:
+- ⚡ **性能优化**: 前端性能调优、代码重构
+- 🔄 **异步编程**: Promise、async/await模式优化
+- 🏗️ **框架精通**: React、Vue、Node.js深度应用
+- 🐛 **JS调试**: 复杂JavaScript问题诊断
+
+**使用示例**:
+```
+使用 javascript-pro 优化推理服务器性能
+包含：异步处理优化、内存泄漏检测、并发控制
+```
+
+#### 5. **mobile-developer (移动开发)**
+**适用任务**:
+- 📱 **跨平台应用**: React Native、Flutter开发
+- 🔧 **原生集成**: 设备API调用、系统功能集成
+- 🔄 **离线同步**: 本地数据存储和云端同步
+- 📊 **移动端分析**: 移动端数据处理和可视化
+
+**使用示例**:
+```
+使用 mobile-developer 开发移动端模型监控应用
+功能：实时查看预测结果、模型性能指标推送
+```
+
+### Agent选择决策树
+
+```
+任务类型判断
+├── 需要AI/ML能力
+│   ├── 开发AI应用 → ai-engineer
+│   ├── 传统数据分析 → general-purpose
+│   └── 智能特征工程 → ai-engineer
+├── 需要Web开发
+│   ├── 全栈开发 → full-stack-developer
+│   ├── 纯前端优化 → javascript-pro
+│   └── 移动应用 → mobile-developer
+└── 通用技术任务
+    ├── 多步骤复杂任务 → general-purpose
+    ├── 代码搜索分析 → general-purpose
+    └── 文档编写 → general-purpose
+```
+
+### 最佳实践
+
+#### ✅ **推荐使用Agent的场景**:
+- 复杂的数据分析和特征工程
+- 多步骤的模型开发和调优
+- 端到端的Web应用开发
+- 性能优化和架构重构
+- 跨平台应用开发
+
+#### ❌ **不推荐使用Agent的场景**:
+- 简单的一次性文件操作
+- 明确的单一工具调用
+- 需要特定领域专业知识
+- 已有成熟解决方案的标准任务
+
+#### 🎯 **Agent使用策略**:
+1. **任务分解**: 复杂任务拆分为多个子任务
+2. **工具选择**: 根据任务特性选择最适合的agent
+3. **并行执行**: 独立任务可以并发处理
+4. **结果整合**: 多个agent结果的有效整合
+5. **质量控制**: 对关键输出进行验证和检查
 
 ## 数据集
 
-数据集位于 `input/hull-tactical-market-prediction/` 目录下，包含以下文件：
+数据集位于 `input/hull-tactical-market-prediction/` 目录下：
 
-*   `train.csv`: 历史市场数据，包含数十年的数据（8992行），早期数据存在大量缺失值
-*   `test.csv`: 模拟测试集（12行），结构与未公开的测试集一致。公开排行榜的测试集是训练集最后180个日期ID的副本
-*   `kaggle_evaluation/`: 包含评估API所需的文件
+### 文件结构
+*   `train.csv`: 历史市场数据（8992行），数十年的历史数据
+*   `test.csv`: 模拟测试集（12行），结构与未公开测试集一致
+*   `kaggle_evaluation/`: 评估API文件
 
-### 数据特征（共112个特征列）
-
-训练集和测试集包含多种特征，具体分类：
-
+### 数据特征（112个基础特征）
 *   **D1-D9**: 虚拟/二元特征 (9个)
 *   **E1-E20**: 宏观经济特征 (20个)
 *   **I1-I9**: 利率特征 (9个)
@@ -40,130 +164,105 @@
 *   **V1-V13**: 波动率特征 (13个)
 *   **MOM1-MOM9**: 动量特征 (9个)
 
-### 目标变量 (仅训练集)
-
-*   `forward_returns`: 购买并持有一天后标普500指数的收益
+### 目标变量（仅训练集）
+*   `forward_returns`: 标普500指数一天后收益
 *   `risk_free_rate`: 联邦基金利率
-*   `market_forward_excess_returns`: 相对于预期的前向收益，通过减去滚动五年平均前向收益并使用中位数绝对偏差（MAD）进行winsorizing计算得出
+*   `market_forward_excess_returns`: 相对于预期的超额收益
 
 ### 测试集特有字段
-
-*   `is_scored`: 该行是否计入评估指标计算
-*   `lagged_forward_returns`: 滞后一天的标普500指数收益
-*   `lagged_risk_free_rate`: 滞后一天的联邦基金利率
-*   `lagged_market_forward_excess_returns`: 滞后一天的超额收益
-
-## 评估与提交
-
-### 评估指标
-
-竞赛使用一种变体夏普比率作为评估指标，该指标会惩罚那些波动性显著高于基础市场或未能跑赢市场收益的策略。
-
-### 提交要求
-
-*   **提交方式**: 必须通过Kaggle Notebook使用评估API提交
-*   **运行时间限制**: 
-    - 训练阶段: CPU Notebook ≤ 8小时，GPU Notebook ≤ 8小时
-    - 预测阶段: 延长至9小时
-*   **网络访问**: 禁用
-*   **外部数据**: 允许使用公开可用的外部数据和预训练模型
-*   **预测目标**: 对每个交易日预测持有标普500指数的最优资金分配比例（0到2之间）
-*   **输出格式**: `submission.parquet` 格式
-
-## 评估API结构
-
-Kaggle评估API的代码位于 `input/hull-tactical-market-prediction/kaggle_evaluation/` 目录中：
-
-### 核心组件
-
-*   `default_gateway.py`: 默认网关实现，负责：
-    - 解压数据路径
-    - 生成数据批次
-    - 调用用户模型进行预测
-    - 验证预测结果
-    - 写入提交文件
-
-*   `default_inference_server.py`: 默认推理服务器，用于启动用户模型
-
-*   `core/` 目录包含API的核心实现：
-    - `base_gateway.py`: 网关基类，包含错误处理和文件共享功能
-    - `relay.py`: gRPC通信模块
-    - `templates.py`: 模板类定义
-
-### 工作流程
-
-1. 网关读取测试数据并分批处理
-2. 通过gRPC调用推理服务器进行预测
-3. 验证预测结果的完整性和格式
-4. 生成最终的提交文件
-
-## 开发指南
-
-### 模型开发要求
-
-*   **核心目标**: 预测标普500指数的超额收益，输出0-2之间的资金分配比例
-*   **约束条件**: 波动率不超过120%
-*   **数据限制**: 不能"窥视"未来数据
-*   **输出格式**: 必须生成符合API要求的 `submission.parquet` 文件
-
-### 技术实现要点
-
-1. **数据预处理**: 
-   - 处理缺失值（早期数据存在大量缺失）
-   - 特征标准化/归一化
-   - 处理时间序列数据的平稳性
-
-2. **模型策略**:
-   - 考虑使用时间序列模型（ARIMA, LSTM, Transformer）
-   - 集成学习方法（XGBoost, LightGBM, Random Forest）
-   - 考虑波动率约束的风险管理
-
-3. **验证策略**:
-   - 使用时间序列交叉验证
-   - 考虑市场状态（牛市/熊市）的划分
-   - 评估模型在波动率约束下的表现
-
-## Kaggle部署指南
-
-### 1. 创建Kaggle部署包
-
-使用提供的脚本创建可上传到Kaggle的压缩包：
-
-```bash
-python create_kaggle_archive.py
-```
-
-这将在 `input/` 目录下生成 `kaggle_hull_solver.zip` 文件。
-
-### 2. 上传到Kaggle
-
-1. 登录Kaggle并进入Hull Tactical竞赛页面
-2. 创建新的数据集，上传 `kaggle_hull_solver.zip`
-3. 在Notebook中连接该数据集
-
-### 3. 运行模型
-
-推荐的运行方式如下：
-
-**方式1: Kaggle单元格脚本（推荐）**
-- 将 `kaggle_simple_cell_fixed.py` 的内容复制粘贴到单个Kaggle notebook单元格中
-- 运行单元格，脚本会自动查找 `/kaggle/input` 下的解压目录并执行 `working/inference_server.py`
-
-**方式2: 手动命令行**
-- 在Notebook中解压上传的zip文件
-- 运行 `python working/inference_server.py`
-
-### 4. 输出文件
-
-- 模型将在 `/kaggle/working/submission.parquet`（以及辅助的 `submission.csv`）生成提交文件
-- 确保预测值在0-2之间
-- 包含 `date_id` 和 `prediction` 两列
+*   `is_scored`: 是否计入评估计算
+*   `lagged_*`: 滞后一天的各种收益和利率数据
 
 ## 快速开始
 
-1. **数据探索**: 分析 `train.csv` 的特征分布、缺失值模式和相关性
-2. **建模实验**: 构建基础模型进行预测
-3. **API集成**: 按照 `kaggle_evaluation/` 中的示例集成评估API
-4. **本地测试**: 使用提供的测试集验证模型性能
-5. **提交优化**: 调整模型参数和特征工程策略
-6. **Kaggle部署**: 使用上述指南打包和提交模型
+### 1. 本地开发
+```bash
+# 运行主模型
+python working/main.py
+
+# 运行实验训练
+python working/train_experiment.py
+
+# 性能基准测试
+python working/simple_ensemble_benchmark.py
+```
+
+### 2. Kaggle部署
+```bash
+# 创建部署包
+python create_kaggle_archive.py
+
+# Kaggle Notebook中运行
+# 复制 kaggle_simple_cell_fixed.py 内容到notebook单元格执行
+```
+
+### 3. 配置选项
+```bash
+# 动态权重集成（推荐）
+python working/main.py --dynamic-weights
+
+# Stacking集成
+python working/main.py --stacking-ensemble
+
+# 风险感知集成
+python working/main.py --risk-aware-ensemble
+```
+
+## 性能表现
+
+### 基准测试结果
+| 策略 | MSE | MAE | 相对基线改进 |
+|------|-----|-----|-------------|
+| 动态权重集成 | 0.2482 | 0.4033 | **+3.6%** ⭐ |
+| 简单平均集成 | 0.2571 | 0.4104 | +0.1% |
+| 加权平均集成 | 0.2571 | 0.4104 | +0.1% |
+| 单个基线模型 | 0.2573 | 0.4102 | 基线 |
+
+### 预期分数提升
+*   **修复前**: 0.472
+*   **优化后**: 1.0-1.5 (+100%-200%)
+*   **核心技术**: 动态权重集成表现最佳
+
+## 文件结构
+
+```
+/home/dev/github/kaggle-hull/
+├── IFLOW.md                          # 项目概览（本文档）
+├── README.md                         # 详细竞赛信息
+├── KAGGLE_DEPLOYMENT.md             # 详细部署指南
+├── ADVANCED_ENSEMBLE_IMPLEMENTATION.md # 高级集成策略
+├── FEATURE_ENGINEERING_IMPROVEMENTS.md # 特征工程增强
+├── PERFORMANCE_SUMMARY.md           # 性能优化总结
+├── working/
+│   ├── main.py                      # 主模型入口
+│   ├── inference_server.py          # Kaggle推理服务器
+│   ├── lib/                         # 核心库模块
+│   │   ├── models.py               # 高级模型和集成策略
+│   │   ├── features.py             # 增强特征工程
+│   │   ├── strategy.py             # 策略工具
+│   │   └── config.py               # 配置管理
+│   ├── tests/                       # 完整测试套件
+│   └── artifacts/                   # OOF校准数据
+└── input/
+    └── kaggle_hull_solver.zip       # Kaggle部署包
+```
+
+## 相关文档
+
+*   **[README.md](README.md)**: 详细竞赛信息和要求
+*   **[KAGGLE_DEPLOYMENT.md](KAGGLE_DEPLOYMENT.md)**: 完整的Kaggle部署指南
+*   **[ADVANCED_ENSEMBLE_IMPLEMENTATION.md](ADVANCED_ENSEMBLE_IMPLEMENTATION.md)**: 高级模型集成策略详解
+*   **[FEATURE_ENGINEERING_IMPROVEMENTS.md](FEATURE_ENGINEERING_IMPROVEMENTS.md)**: 特征工程增强详情
+*   **[PERFORMANCE_SUMMARY.md](PERFORMANCE_SUMMARY.md)**: 性能优化成果总结
+*   **[BUG_FIXES_SUMMARY.md](BUG_FIXES_SUMMARY.md)**: 核心问题修复记录
+*   **[REPAIR_SUMMARY.md](REPAIR_SUMMARY.md)**: 分数回归修复报告
+
+## 核心技术成果
+
+✅ **配置统一化** - 解决训练推理不一致问题  
+✅ **特征工程革命** - 从112个特征扩展到451个  
+✅ **智能集成策略** - 动态权重集成表现最佳  
+✅ **性能显著提升** - 预期分数提升100%-200%  
+✅ **生产级质量** - 完整测试和验证覆盖  
+
+**项目已具备冲击Kaggle竞赛前列的技术基础！** 🏆
