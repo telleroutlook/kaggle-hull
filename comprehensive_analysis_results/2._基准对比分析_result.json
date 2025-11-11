@@ -1,0 +1,14 @@
+{
+  "comparison_results": {
+    "summary": {
+      "total_strategies": 4,
+      "avg_improvements": {
+        "mse": {
+          "mean": 15.2
+        }
+      },
+      "consistency_score": 0.85
+    }
+  },
+  "note": "模拟结果"
+}

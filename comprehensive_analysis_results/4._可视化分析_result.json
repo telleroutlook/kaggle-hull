@@ -1,0 +1,8 @@
+{
+  "dashboard_file": "模拟仪表板.png",
+  "analysis_files": [
+    "模拟分析1.png",
+    "模拟分析2.png"
+  ],
+  "note": "模拟结果"
+}

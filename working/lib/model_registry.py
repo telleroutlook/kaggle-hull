@@ -83,8 +83,26 @@ def resolve_model_type(requested: str | None = None) -> str:
 
 
 def get_model_params(model_type: str) -> Dict[str, Any]:
-    """Return preset hyper-parameters for the requested model."""
-
+    """Return preset hyper-parameters for the requested model.
+    
+    首先尝试从配置中获取调优后的参数，如果不存在则使用预设参数。
+    """
+    
+    # 尝试获取调优后的参数
+    try:
+        from .config import get_config
+        config = get_config()
+        tuned_params = config.get_optimized_model_params(model_type)
+        
+        if tuned_params and config.is_tuning_enabled():
+            print(f"✅ 使用调优后的{model_type}参数: {tuned_params}")
+            return tuned_params
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 获取调优参数失败，使用默认参数: {e}")
+    
+    # 回退到预设参数
     return MODEL_PRESETS.get(model_type, {})
 
 

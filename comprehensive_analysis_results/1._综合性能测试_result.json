@@ -1,0 +1,55 @@
+{
+  "test_results": [
+    {
+      "test_name": "性能测试_智能特征工程",
+      "strategy": "智能特征工程",
+      "performance": {
+        "mse": 0.252,
+        "mae": 0.5019960159204453
+      },
+      "timing": {
+        "total_time": 2.0
+      },
+      "success": true
+    },
+    {
+      "test_name": "性能测试_动态权重集成",
+      "strategy": "动态权重集成",
+      "performance": {
+        "mse": 0.247,
+        "mae": 0.4969909455915671
+      },
+      "timing": {
+        "total_time": 2.5
+      },
+      "success": true
+    },
+    {
+      "test_name": "性能测试_超参数优化",
+      "strategy": "超参数优化",
+      "performance": {
+        "mse": 0.242,
+        "mae": 0.4919349550499537
+      },
+      "timing": {
+        "total_time": 3.0
+      },
+      "success": true
+    },
+    {
+      "test_name": "性能测试_自适应窗口",
+      "strategy": "自适应窗口",
+      "performance": {
+        "mse": 0.23700000000000002,
+        "mae": 0.4868264577855234
+      },
+      "timing": {
+        "total_time": 3.5
+      },
+      "success": true
+    }
+  ],
+  "total_tests": 4,
+  "successful_tests": 4,
+  "note": "模拟结果"
+}

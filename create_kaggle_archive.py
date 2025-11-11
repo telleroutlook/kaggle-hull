@@ -32,6 +32,7 @@ def build_manifest(include_tests: bool) -> List[str]:
         "working/main.py",
         "working/main_fixed.py",
         "working/inference_server.py",
+        "working/warnings_handler.py",  # 添加缺少的警告处理模块
         "working/__init__.py",
         "working/config.ini",
         "working/lib/",

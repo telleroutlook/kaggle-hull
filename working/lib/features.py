@@ -14,8 +14,13 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
+from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer, PowerTransformer
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression, RFE, SelectFromModel
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import ElasticNet, Lasso
+from sklearn.metrics import mutual_info_score
+from sklearn.cluster import KMeans
+from scipy.stats import spearmanr, pearsonr, kendalltau
 
 from .data import get_feature_columns as data_get_feature_columns
 
@@ -128,7 +133,7 @@ def add_statistical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class FeaturePipeline:
-    """Lightweight feature engineering pipeline shared by training/inference."""
+    """Enhanced feature engineering pipeline with intelligent feature selection and optimization."""
 
     _CONFIG_FIELDS = (
         "clip_quantile",
@@ -144,6 +149,13 @@ class FeaturePipeline:
         "enable_feature_stability",
         "outlier_detection",
         "missing_value_strategy",
+        "enable_intelligent_selection",
+        "enable_feature_combinations",
+        "enable_tiered_features",
+        "enable_robust_scaling",
+        "feature_selection_method",
+        "combination_complexity",
+        "tiered_levels",
     )
 
     def __init__(
@@ -162,6 +174,13 @@ class FeaturePipeline:
         enable_feature_stability: bool = True,
         outlier_detection: bool = True,
         missing_value_strategy: str = "median",
+        enable_intelligent_selection: bool = True,
+        enable_feature_combinations: bool = True,
+        enable_tiered_features: bool = True,
+        enable_robust_scaling: bool = True,
+        feature_selection_method: str = "mixed",  # "correlation", "mutual_info", "rfe", "mixed"
+        combination_complexity: int = 3,  # 1-5, complexity level for feature combinations
+        tiered_levels: int = 4,  # number of market state tiers
     ) -> None:
         self.clip_quantile = clip_quantile
         self.missing_indicator_threshold = missing_indicator_threshold
@@ -176,6 +195,15 @@ class FeaturePipeline:
         self.enable_feature_stability = enable_feature_stability
         self.outlier_detection = outlier_detection
         self.missing_value_strategy = missing_value_strategy
+        
+        # 智能特征工程配置
+        self.enable_intelligent_selection = enable_intelligent_selection
+        self.enable_feature_combinations = enable_feature_combinations
+        self.enable_tiered_features = enable_tiered_features
+        self.enable_robust_scaling = enable_robust_scaling
+        self.feature_selection_method = feature_selection_method
+        self.combination_complexity = combination_complexity
+        self.tiered_levels = tiered_levels
 
         self.feature_columns: List[str] = []
         self.numeric_columns: List[str] = []
@@ -190,11 +218,19 @@ class FeaturePipeline:
         self.feature_importance: Optional[Dict[str, float]] = None
         self._history_buffer: Optional[pd.DataFrame] = None
         
-        # 新增的数据质量和特征稳定性属性
+        # 数据质量和特征稳定性属性
         self.feature_stability_scores: Optional[Dict[str, float]] = None
         self.outlier_bounds: Dict[str, Tuple[float, float]] = {}
         self.data_quality_metrics: Dict[str, Any] = {}
         self.scaler: Optional[Any] = None
+        
+        # 智能特征工程属性
+        self.correlation_matrix: Optional[pd.DataFrame] = None
+        self.mutual_info_scores: Optional[Dict[str, float]] = None
+        self.feature_compatibility: Optional[Dict[str, List[str]]] = None
+        self.market_state_tiers: Optional[Dict[str, pd.Series]] = None
+        self.selected_features_meta: Optional[Dict[str, Any]] = None
+        self.combination_history: List[Dict[str, Any]] = []
 
     def fit(self, df: pd.DataFrame, feature_cols: Optional[Iterable[str]] = None) -> "FeaturePipeline":
         """Collect statistics needed for deterministic transforms."""
@@ -266,11 +302,21 @@ class FeaturePipeline:
         if self.outlier_detection:
             self._set_outlier_bounds(features)
         
-        # 特征选择
-        if self.enable_feature_selection and self.feature_importance:
+        # 初始化智能缩放器
+        if self.standardize and self.enable_robust_scaling:
+            self._initialize_scaler(features)
+        
+        # 智能特征选择
+        if self.enable_intelligent_selection:
+            self._perform_intelligent_feature_selection(features)
+        elif self.enable_feature_selection and self.feature_importance:
             # 根据重要性排序选择特征
             sorted_features = sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)
             self.selected_features = [feat for feat, _ in sorted_features[:self.max_features]]
+        
+        # 分析特征相关性
+        if self.enable_intelligent_selection:
+            self._analyze_feature_correlations(features)
         
         # Reset any streaming state because fit has been rerun.
         self._history_buffer = None
@@ -322,8 +368,23 @@ class FeaturePipeline:
                 series = series.clip(lower=lower, upper=upper)
             
             if self.standardize:
-                mean, std = self.standardization_stats.get(col, (0.0, 1.0))
-                series = (series - mean) / (std if std > 0 else 1.0)
+                if self.enable_robust_scaling and self.scaler is not None:
+                    # 使用RobustScaler或QuantileTransformer
+                    try:
+                        if hasattr(self.scaler, 'transform'):
+                            series_values = series.values.reshape(-1, 1)
+                            scaled_values = self.scaler.transform(series_values)
+                            series = pd.Series(scaled_values.flatten(), index=series.index)
+                        else:
+                            mean, std = self.standardization_stats.get(col, (0.0, 1.0))
+                            series = (series - mean) / (std if std > 0 else 1.0)
+                    except Exception:
+                        # 回退到StandardScaler
+                        mean, std = self.standardization_stats.get(col, (0.0, 1.0))
+                        series = (series - mean) / (std if std > 0 else 1.0)
+                else:
+                    mean, std = self.standardization_stats.get(col, (0.0, 1.0))
+                    series = (series - mean) / (std if std > 0 else 1.0)
             features[col] = series.astype(self.dtype)
 
         for col in self.categorical_columns:
@@ -353,9 +414,19 @@ class FeaturePipeline:
         # 添加增强特征工程
         features = self._add_enhanced_features(features, df)
         features = self._add_lagged_interactions(features, df)
+        
+        # 智能特征组合
+        if self.enable_feature_combinations:
+            features = self._add_intelligent_combinations(features, df)
+        
+        # 分层特征工程
+        if self.enable_tiered_features:
+            features = self._add_tiered_market_features(features, df)
 
-        # 特征选择
-        if self.enable_feature_selection and self.selected_features:
+        # 智能特征选择
+        if self.enable_intelligent_selection and self.selected_features:
+            features = features[self.selected_features]
+        elif self.enable_feature_selection and self.selected_features:
             # 只保留选定的特征
             features = features[self.selected_features]
 
@@ -772,6 +843,455 @@ class FeaturePipeline:
         
         self.feature_stability_scores = stability_scores
 
+    def _perform_intelligent_feature_selection(self, features: pd.DataFrame) -> None:
+        """执行智能特征选择，结合多种方法"""
+        
+        if not self.numeric_columns:
+            return
+        
+        selection_scores = {}
+        available_features = [col for col in self.numeric_columns if col in features.columns]
+        
+        if self.feature_selection_method in ["correlation", "mixed"]:
+            # 基于相关性的特征选择
+            correlation_scores = self._select_by_correlation(features[available_features])
+            selection_scores.update(correlation_scores)
+        
+        if self.feature_selection_method in ["mutual_info", "mixed"]:
+            # 基于互信息的特征选择
+            if hasattr(self, 'target_column') and self.target_column in features.columns:
+                mi_scores = self._select_by_mutual_info(features[available_features], self.target_column)
+                selection_scores.update(mi_scores)
+        
+        if self.feature_selection_method in ["rfe", "mixed"]:
+            # 基于递归特征消除的选择
+            if hasattr(self, 'target_column') and self.target_column in features.columns:
+                rfe_scores = self._select_by_rfe(features[available_features], self.target_column)
+                selection_scores.update(rfe_scores)
+        
+        # 聚类分析找出冗余特征
+        if self.feature_selection_method in ["mixed"]:
+            cluster_analysis = self._analyze_feature_clusters(features[available_features])
+            selection_scores.update(cluster_analysis)
+        
+        # 综合评分和选择
+        self._integrate_selection_scores(selection_scores, available_features)
+    
+    def _select_by_correlation(self, features: pd.DataFrame) -> Dict[str, float]:
+        """基于相关性分析选择特征"""
+        
+        if len(features.columns) < 2:
+            return {col: 1.0 for col in features.columns}
+        
+        correlation_matrix = features.corr().abs()
+        n_features = len(features.columns)
+        
+        # 计算每个特征的平均相关性（排除自身）
+        avg_correlations = {}
+        for col in features.columns:
+            others = [c for c in features.columns if c != col]
+            if others:
+                avg_corr = correlation_matrix.loc[col, others].mean()
+                avg_correlations[col] = 1.0 - avg_corr  # 相关性越低，独立性越高
+            else:
+                avg_correlations[col] = 1.0
+        
+        return avg_correlations
+    
+    def _select_by_mutual_info(self, features: pd.DataFrame, target: str) -> Dict[str, float]:
+        """基于互信息选择特征"""
+        
+        if target not in features.columns:
+            return {col: 0.5 for col in features.columns}
+        
+        target_values = features[target].values
+        feature_cols = [col for col in features.columns if col != target]
+        
+        mi_scores = {}
+        try:
+            for col in feature_cols:
+                if features[col].nunique() > 1:
+                    # 离散化连续特征用于互信息计算
+                    col_values = pd.qcut(features[col], q=5, duplicates='drop', labels=False)
+                    score = mutual_info_score(target_values, col_values)
+                    mi_scores[col] = score
+                else:
+                    mi_scores[col] = 0.0
+        except Exception:
+            # 如果互信息计算失败，使用默认分数
+            mi_scores = {col: 0.5 for col in feature_cols}
+        
+        return mi_scores
+    
+    def _select_by_rfe(self, features: pd.DataFrame, target: str) -> Dict[str, float]:
+        """基于递归特征消除选择特征"""
+        
+        if target not in features.columns or features[target].nunique() < 2:
+            return {col: 0.5 for col in features.columns}
+        
+        feature_cols = [col for col in features.columns if col != target]
+        if not feature_cols:
+            return {}
+        
+        X = features[feature_cols].fillna(0)
+        y = features[target]
+        
+        try:
+            # 使用随机森林作为基估计器
+            estimator = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
+            
+            # RFE选择一半特征
+            n_features = max(1, len(feature_cols) // 2)
+            rfe = RFE(estimator=estimator, n_features_to_select=n_features, step=1)
+            rfe.fit(X, y)
+            
+            # 返回排名得分
+            scores = {}
+            for i, col in enumerate(feature_cols):
+                scores[col] = 1.0 if rfe.support_[i] else 0.5
+            
+            return scores
+        except Exception:
+            # 如果RFE失败，返回默认分数
+            return {col: 0.5 for col in feature_cols}
+    
+    def _analyze_feature_clusters(self, features: pd.DataFrame) -> Dict[str, float]:
+        """分析特征聚类，找出冗余特征"""
+        
+        if len(features.columns) < 4:
+            return {col: 0.8 for col in features.columns}
+        
+        # 标准化特征用于聚类
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        scaled_features = scaler.fit_transform(features.fillna(0))
+        
+        # K-means聚类
+        n_clusters = min(8, len(features.columns) // 3)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(scaled_features)
+        
+        # 计算每个聚类的中心特征
+        cluster_centers = pd.DataFrame(kmeans.cluster_centers_, columns=features.columns)
+        cluster_scores = {}
+        
+        for i, col in enumerate(features.columns):
+            cluster_id = cluster_labels[i]
+            center_value = cluster_centers.iloc[cluster_id, i]
+            
+            # 计算与聚类中心的距离
+            distance = abs(scaled_features[i] - center_value)
+            avg_distance = np.mean(distance)
+            
+            # 距离中心越近，冗余性越高
+            redundancy_score = 1.0 - avg_distance
+            cluster_scores[col] = max(0.1, redundancy_score)
+        
+        return cluster_scores
+    
+    def _integrate_selection_scores(self, selection_scores: Dict[str, float], available_features: List[str]) -> None:
+        """整合多种选择方法的分数"""
+        
+        if not selection_scores:
+            self.selected_features = available_features[:self.max_features]
+            return
+        
+        # 标准化分数
+        if selection_scores:
+            scores = np.array(list(selection_scores.values()))
+            if len(scores) > 1:
+                scores = (scores - scores.min()) / (scores.max() - scores.min() + 1e-8)
+            selection_scores = dict(zip(selection_scores.keys(), scores))
+        
+        # 综合评分
+        feature_scores = {}
+        for feature in available_features:
+            if feature in selection_scores:
+                # 如果特征稳定性较高，给予额外加分
+                stability_bonus = self.feature_stability_scores.get(feature, 0.5) * 0.2 if self.feature_stability_scores else 0
+                feature_scores[feature] = selection_scores[feature] + stability_bonus
+            else:
+                feature_scores[feature] = 0.5
+        
+        # 选择最佳特征
+        sorted_features = sorted(feature_scores.items(), key=lambda x: x[1], reverse=True)
+        selected_count = min(self.max_features, len(sorted_features))
+        self.selected_features = [feat for feat, _ in sorted_features[:selected_count]]
+        
+        # 保存元数据
+        self.selected_features_meta = {
+            'total_available': len(available_features),
+            'selected_count': selected_count,
+            'selection_method': self.feature_selection_method,
+            'feature_scores': feature_scores,
+            'selection_rationale': 'Intelligent multi-method feature selection'
+        }
+    
+    def _analyze_feature_correlations(self, features: pd.DataFrame) -> None:
+        """分析特征相关性矩阵"""
+        
+        numeric_features = [col for col in self.numeric_columns if col in features.columns]
+        
+        if len(numeric_features) < 2:
+            return
+        
+        self.correlation_matrix = features[numeric_features].corr()
+        
+        # 识别高相关特征对
+        high_corr_pairs = []
+        for i in range(len(self.correlation_matrix.columns)):
+            for j in range(i + 1, len(self.correlation_matrix.columns)):
+                corr_value = abs(self.correlation_matrix.iloc[i, j])
+                if corr_value > 0.8:  # 高相关性阈值
+                    col1 = self.correlation_matrix.columns[i]
+                    col2 = self.correlation_matrix.columns[j]
+                    high_corr_pairs.append((col1, col2, corr_value))
+        
+        # 分析特征兼容性
+        self.feature_compatibility = {
+            'high_correlation_pairs': high_corr_pairs,
+            'correlation_threshold': 0.8,
+            'feature_diversity_score': self._calculate_feature_diversity()
+        }
+    
+    def _calculate_feature_diversity(self) -> float:
+        """计算特征多样性得分"""
+        
+        if self.correlation_matrix is None or len(self.correlation_matrix) < 2:
+            return 1.0
+        
+        # 计算平均绝对相关性
+        upper_triangle = np.triu(self.correlation_matrix.values, k=1)
+        upper_triangle = upper_triangle[upper_triangle != 0]
+        avg_correlation = np.mean(np.abs(upper_triangle))
+        
+        # 多样性得分 = 1 - 平均相关性
+        diversity_score = 1.0 - avg_correlation
+        return max(0.0, min(1.0, diversity_score))
+    
+    def _add_intelligent_combinations(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
+        """添加智能特征组合"""
+        
+        combination_frames = []
+        
+        if not self.selected_features:
+            return features
+        
+        # 根据复杂度级别选择组合策略
+        if self.combination_complexity >= 1:
+            combination_frames.extend(self._add_basic_combinations(features))
+        
+        if self.combination_complexity >= 2:
+            combination_frames.extend(self._add_polynomial_combinations(features))
+        
+        if self.combination_complexity >= 3:
+            combination_frames.extend(self._add_conditional_combinations(features, original_df))
+        
+        if self.combination_complexity >= 4:
+            combination_frames.extend(self._add_time_series_combinations(features))
+        
+        if self.combination_complexity >= 5:
+            combination_frames.extend(self._add_nonlinear_combinations(features))
+        
+        if combination_frames:
+            combination_df = pd.concat(combination_frames, axis=1)
+            features = pd.concat([features, combination_df], axis=1)
+        
+        return features
+    
+    def _add_basic_combinations(self, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """基础特征组合"""
+        
+        basic_combinations = []
+        selected_cols = self.selected_features or list(features.columns)[:20]
+        
+        # 两两组合（乘法和除法）
+        for i, col1 in enumerate(selected_cols[:15]):
+            for col2 in selected_cols[i+1:i+3]:  # 限制组合数量
+                if col1 in features.columns and col2 in features.columns:
+                    # 乘法组合
+                    product = features[col1] * features[col2]
+                    product = product.fillna(0).astype(self.dtype)
+                    basic_combinations.append(product.to_frame(f"{col1}_x_{col2}"))
+                    
+                    # 除法组合（避免除零）
+                    safe_divisor = features[col2].abs() + 1e-8
+                    division = features[col1] / safe_divisor
+                    division = division.replace([np.inf, -np.inf], 0).fillna(0)
+                    basic_combinations.append(division.astype(self.dtype).to_frame(f"{col1}_div_{col2}"))
+        
+        return basic_combinations
+    
+    def _add_polynomial_combinations(self, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """多项式特征组合"""
+        
+        poly_combinations = []
+        selected_cols = self.selected_features or list(features.columns)[:10]
+        
+        for col in selected_cols[:8]:
+            if col in features.columns:
+                series = features[col]
+                
+                # 平方
+                squared = series ** 2
+                poly_combinations.append(squared.fillna(0).astype(self.dtype).to_frame(f"{col}_squared"))
+                
+                # 立方
+                cubed = series ** 3
+                poly_combinations.append(cubed.fillna(0).astype(self.dtype).to_frame(f"{col}_cubed"))
+                
+                # 平方根
+                sqrt = np.sqrt(np.abs(series))
+                poly_combinations.append(sqrt.fillna(0).astype(self.dtype).to_frame(f"{col}_sqrt"))
+        
+        return poly_combinations
+    
+    def _add_conditional_combinations(self, features: pd.DataFrame, original_df: pd.DataFrame) -> List[pd.DataFrame]:
+        """条件特征组合"""
+        
+        conditional_frames = []
+        
+        # 基于市场状态的条件组合
+        if 'V1' in features.columns and 'P1' in original_df.columns:
+            vol_state = features['V1'] > features['V1'].rolling(20).quantile(0.75)
+            price_change = original_df['P1'].pct_change()
+            
+            # 高波动率环境下的价格动量
+            high_vol_momentum = price_change.where(vol_state, 0)
+            conditional_frames.append(
+                high_vol_momentum.fillna(0).astype(self.dtype).to_frame('high_vol_momentum')
+            )
+        
+        # 基于技术指标的条件组合
+        if all(col in features.columns for col in ['M1', 'M2', 'M3']):
+            # 市场强度条件下的特征组合
+            market_strength = (features['M1'] + features['M2'] + features['M3']) / 3
+            strong_market = market_strength > market_strength.rolling(20).quantile(0.8)
+            
+            for col in ['M1', 'M2', 'M3']:
+                conditional_combo = features[col].where(strong_market, features[col] * 0.5)
+                conditional_frames.append(
+                    conditional_combo.fillna(0).astype(self.dtype).to_frame(f"conditional_{col}")
+                )
+        
+        return conditional_frames
+    
+    def _add_time_series_combinations(self, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """时间序列特征组合"""
+        
+        ts_combinations = []
+        selected_cols = self.selected_features or list(features.columns)[:8]
+        
+        for col in selected_cols[:6]:
+            if col in features.columns and len(features) > 10:
+                series = features[col]
+                
+                # 移动平均组合
+                ma_5 = series.rolling(5).mean()
+                ma_20 = series.rolling(20).mean()
+                
+                if self.combination_complexity >= 4:
+                    ma_ratio = ma_5 / (ma_20 + 1e-8)
+                    ts_combinations.append(ma_ratio.fillna(1).astype(self.dtype).to_frame(f"{col}_ma_ratio"))
+                
+                # 指数加权移动平均
+                ewm_short = series.ewm(span=5).mean()
+                ewm_long = series.ewm(span=20).mean()
+                ewm_combo = ewm_short * ewm_long
+                ts_combinations.append(ewm_combo.fillna(0).astype(self.dtype).to_frame(f"{col}_ewm_combo"))
+        
+        return ts_combinations
+    
+    def _add_nonlinear_combinations(self, features: pd.DataFrame) -> List[pd.DataFrame]:
+        """非线性特征组合"""
+        
+        nonlinear_frames = []
+        selected_cols = self.selected_features or list(features.columns)[:6]
+        
+        for col in selected_cols[:4]:
+            if col in features.columns:
+                series = features[col]
+                
+                # 对数变换
+                log_series = np.log(np.abs(series) + 1e-8)
+                nonlinear_frames.append(log_series.fillna(0).astype(self.dtype).to_frame(f"{col}_log"))
+                
+                # 指数变换
+                exp_series = np.exp(series / 10)  # 缩放避免数值溢出
+                nonlinear_frames.append(exp_series.fillna(1).astype(self.dtype).to_frame(f"{col}_exp"))
+        
+        return nonlinear_frames
+    
+    def _add_tiered_market_features(self, features: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
+        """添加分层市场特征"""
+        
+        if 'V1' not in features.columns:
+            return features
+        
+        tiered_frames = []
+        
+        # 市场状态分层
+        market_tiers = self._define_market_tiers(features, original_df)
+        
+        # 为每个市场状态层级创建特征
+        for tier_name, tier_condition in market_tiers.items():
+            if tier_condition.sum() < 5:  # 确保有足够样本
+                continue
+            
+            tiered_features = features.where(tier_condition)
+            numeric_cols = features.select_dtypes(include=[np.number]).columns[:20]
+            
+            for col in numeric_cols:
+                if col in features.columns:
+                    # 分层均值
+                    tier_mean = tiered_features[col].rolling(5, min_periods=1).mean()
+                    tiered_frames.append(
+                        tier_mean.fillna(features[col]).astype(self.dtype).to_frame(f"{col}_mean_{tier_name}")
+                    )
+                    
+                    # 分层标准差
+                    tier_std = tiered_features[col].rolling(5, min_periods=1).std()
+                    tiered_frames.append(
+                        tier_std.fillna(features[col].std()).astype(self.dtype).to_frame(f"{col}_std_{tier_name}")
+                    )
+        
+        if tiered_frames:
+            tiered_df = pd.concat(tiered_frames, axis=1)
+            features = pd.concat([features, tiered_df], axis=1)
+        
+        return features
+    
+    def _define_market_tiers(self, features: pd.DataFrame, original_df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """定义市场状态层级"""
+        
+        market_tiers = {}
+        
+        # 波动率层级
+        if 'V1' in features.columns:
+            vol_rolling = features['V1'].rolling(50, min_periods=20)
+            vol_percentile = vol_rolling.rank(pct=True)
+            
+            market_tiers['low_vol'] = vol_percentile < 0.25
+            market_tiers['normal_vol'] = (vol_percentile >= 0.25) & (vol_percentile <= 0.75)
+            market_tiers['high_vol'] = vol_percentile > 0.75
+        
+        # 趋势层级
+        if 'P1' in original_df.columns:
+            price_change = original_df['P1'].pct_change(5)
+            trend_strength = np.abs(price_change).rolling(20).mean()
+            trend_percentile = trend_strength.rolling(50, min_periods=20).rank(pct=True)
+            
+            market_tiers['weak_trend'] = trend_percentile < 0.25
+            market_tiers['moderate_trend'] = (trend_percentile >= 0.25) & (trend_percentile <= 0.75)
+            market_tiers['strong_trend'] = trend_percentile > 0.75
+        
+        # 综合市场状态
+        if 'low_vol' in market_tiers and 'strong_trend' in market_tiers:
+            market_tiers['bull_market'] = market_tiers['low_vol'] & market_tiers['strong_trend']
+            market_tiers['bear_market'] = market_tiers['high_vol'] & market_tiers['weak_trend']
+        
+        return market_tiers
+
     def _set_outlier_bounds(self, features: pd.DataFrame) -> None:
         """设置异常值边界"""
         
@@ -807,6 +1327,39 @@ class FeaturePipeline:
             # 确保边界合理
             if np.isfinite(lower_bound) and np.isfinite(upper_bound) and lower_bound < upper_bound:
                 self.outlier_bounds[col] = (float(lower_bound), float(upper_bound))
+
+    def _initialize_scaler(self, features: pd.DataFrame) -> None:
+        """初始化智能缩放器"""
+        
+        try:
+            # 尝试使用QuantileTransformer进行分位数标准化
+            if len(self.numeric_columns) > 5:
+                # 选择前20个数值特征进行缩放
+                selected_cols = [col for col in self.numeric_columns if col in features.columns][:20]
+                if selected_cols:
+                    scaler_data = features[selected_cols].fillna(0)
+                    if scaler_data.nunique().sum() > len(selected_cols):  # 确保有足够变化
+                        self.scaler = QuantileTransformer(output_distribution='uniform', random_state=42)
+                        self.scaler.fit(scaler_data)
+                        return
+        except Exception:
+            pass
+        
+        try:
+            # 回退到RobustScaler
+            if len(self.numeric_columns) > 2:
+                selected_cols = [col for col in self.numeric_columns if col in features.columns][:15]
+                if selected_cols:
+                    scaler_data = features[selected_cols].fillna(0)
+                    if scaler_data.std().sum() > 0:  # 确保有变化
+                        self.scaler = RobustScaler()
+                        self.scaler.fit(scaler_data)
+                        return
+        except Exception:
+            pass
+        
+        # 如果都失败，保持StandardScaler
+        self.scaler = None
 
     def _smart_fill_missing(self, series: pd.Series, col_name: str) -> pd.Series:
         """智能缺失值填充"""
@@ -883,7 +1436,7 @@ class FeaturePipeline:
 
     @classmethod
     def default_config(cls) -> Dict[str, Any]:
-        """Return the canonical default pipeline configuration."""
+        """Return the canonical default pipeline configuration with intelligent optimization."""
 
         return {
             "clip_quantile": 0.01,
@@ -899,6 +1452,13 @@ class FeaturePipeline:
             "enable_feature_stability": True,
             "outlier_detection": True,
             "missing_value_strategy": "median",
+            "enable_intelligent_selection": True,
+            "enable_feature_combinations": True,
+            "enable_tiered_features": True,
+            "enable_robust_scaling": True,
+            "feature_selection_method": "mixed",
+            "combination_complexity": 3,
+            "tiered_levels": 4,
         }
 
     def to_config(self) -> Dict[str, Any]:

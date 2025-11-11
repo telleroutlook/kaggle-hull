@@ -1,0 +1,14 @@
+{
+  "report_data": {
+    "report_metadata": {
+      "title": "Hull Tactical项目性能评估报告",
+      "version": "1.0"
+    }
+  },
+  "output_files": {
+    "json": "模拟报告.json",
+    "markdown": "模拟报告.md",
+    "html": "模拟报告.html"
+  },
+  "note": "模拟结果"
+}

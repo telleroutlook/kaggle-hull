@@ -42,46 +42,111 @@ except ImportError:
 
 # Ensure the Kaggle evaluation helpers are importable in both local and Kaggle environments.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# 改进的评估API路径查找
 EVALUATION_SEARCH_ROOTS = [
     Path("/kaggle/input/hull-tactical-market-prediction"),
     PROJECT_ROOT / "input" / "hull-tactical-market-prediction",
 ]
 
+# 在Kaggle环境中也可能直接从当前工作目录访问
+if Path.cwd() != PROJECT_ROOT:
+    EVALUATION_SEARCH_ROOTS.insert(0, Path.cwd() / "input" / "hull-tactical-market-prediction")
+
+kaggle_evaluation_found = False
 for candidate in EVALUATION_SEARCH_ROOTS:
     pkg_root = candidate / "kaggle_evaluation"
     if pkg_root.exists():
         if str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
+        print(f"✅ 找到Kaggle评估API: {candidate}")
+        kaggle_evaluation_found = True
         break
-else:
+
+if not kaggle_evaluation_found:
     raise RuntimeError(
         "kaggle_evaluation package not found. Please add the official competition data set "
-        "as an input when running this script."
+        "as an input when running this script. Searched paths: "
+        + str(EVALUATION_SEARCH_ROOTS)
     )
 
-import kaggle_evaluation.default_inference_server  # type: ignore  # noqa: E402
+try:
+    import kaggle_evaluation.default_inference_server  # type: ignore  # noqa: E402
+except ImportError as e:
+    print(f"❌ 导入kaggle_evaluation失败: {e}")
+    print("请确保已正确添加竞赛数据作为输入")
+    raise
 
-from lib.artifacts import (  # noqa: E402
-    load_first_available_oof,
-    oof_artifact_candidates,
-    update_oof_artifact,
-)
-from lib.data import load_training_frame  # noqa: E402
-from lib.env import (  # noqa: E402
-    PROJECT_ROOT,
-    detect_run_environment,
-    get_data_paths,
-    get_log_paths,
-)
-from lib.features import FeaturePipeline, build_feature_pipeline, pipeline_config_hash  # noqa: E402
-from lib.model_registry import get_model_params, resolve_model_type  # noqa: E402
-from lib.models import HullModel  # noqa: E402
-from lib.strategy import (  # noqa: E402
-    VolatilityOverlay,
-    optimize_scale_with_rolling_cv,
-    scale_to_allocation,
-    tune_allocation_scale,
-)
+# 改进的lib模块导入逻辑
+# 确保当前目录在Python路径中，以便正确导入lib模块
+current_dir = Path(__file__).parent
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
+
+print(f"✅ 设置模块导入路径: {current_dir}")
+
+try:
+    from lib.artifacts import (  # noqa: E402
+        load_first_available_oof,
+        oof_artifact_candidates,
+        update_oof_artifact,
+    )
+    print("✅ 成功导入 lib.artifacts")
+except ImportError as e:
+    print(f"❌ 导入 lib.artifacts 失败: {e}")
+    raise
+
+try:
+    from lib.data import load_training_frame  # noqa: E402
+    print("✅ 成功导入 lib.data")
+except ImportError as e:
+    print(f"❌ 导入 lib.data 失败: {e}")
+    raise
+
+try:
+    from lib.env import (  # noqa: E402
+        PROJECT_ROOT,
+        detect_run_environment,
+        get_data_paths,
+        get_log_paths,
+    )
+    print("✅ 成功导入 lib.env")
+except ImportError as e:
+    print(f"❌ 导入 lib.env 失败: {e}")
+    raise
+
+try:
+    from lib.features import FeaturePipeline, build_feature_pipeline, pipeline_config_hash  # noqa: E402
+    print("✅ 成功导入 lib.features")
+except ImportError as e:
+    print(f"❌ 导入 lib.features 失败: {e}")
+    raise
+
+try:
+    from lib.model_registry import get_model_params, resolve_model_type  # noqa: E402
+    print("✅ 成功导入 lib.model_registry")
+except ImportError as e:
+    print(f"❌ 导入 lib.model_registry 失败: {e}")
+    raise
+
+try:
+    from lib.models import HullModel  # noqa: E402
+    print("✅ 成功导入 lib.models")
+except ImportError as e:
+    print(f"❌ 导入 lib.models 失败: {e}")
+    raise
+
+try:
+    from lib.strategy import (  # noqa: E402
+        VolatilityOverlay,
+        optimize_scale_with_rolling_cv,
+        scale_to_allocation,
+        tune_allocation_scale,
+    )
+    print("✅ 成功导入 lib.strategy")
+except ImportError as e:
+    print(f"❌ 导入 lib.strategy 失败: {e}")
+    raise
 
 
 TRUE_STRINGS = {"1", "true", "yes", "on"}

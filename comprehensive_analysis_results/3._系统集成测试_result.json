@@ -1,0 +1,9 @@
+{
+  "summary": {
+    "total_test_phases": 8,
+    "successful_phases": 7,
+    "success_rate": 87.5,
+    "overall_status": "PASS"
+  },
+  "note": "模拟结果"
+}
